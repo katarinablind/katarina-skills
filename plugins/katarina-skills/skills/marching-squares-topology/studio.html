@@ -1,0 +1,579 @@
+<!--
+  Marching Squares · Topology Studio — Katarina Blind
+  ====================================================
+  Interactive demo for the marching-squares-topology Claude skill.
+
+  Visualizes a layered Perlin-noise contour field with a cursor-driven
+  depression. Hover the canvas to deform the field; tune iso levels,
+  grid resolution, noise scale, depression strength/radius, and
+  animation speed from the sidebar in real time.
+
+  Self-contained — open with python3 -m http.server, or just file://.
+  Tokens inlined from data-mapping/shared/tokens.css (see comment).
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Marching Squares · Topology · Studio</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+
+<style>
+/* === Inlined from data-mapping/shared/tokens.css ============================ */
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap');
+
+:root {
+  /* ─── Surfaces ─────────────────────────────────── */
+  --bg:            #0a0a0a;
+  --surface:       #ffffff;
+  --surface-muted: #f1f1ee;
+  --surface-dark:  #111214;
+  --border:        rgba(0, 0, 0, 0.06);
+  --border-dark:   rgba(255, 255, 255, 0.05);
+
+  /* ─── Text on light surfaces ───────────────────── */
+  --text:          #141414;
+  --text-muted:    rgba(20, 20, 20, 0.55);
+  --text-subtle:   rgba(20, 20, 20, 0.38);
+
+  /* ─── Text on dark surfaces ────────────────────── */
+  --text-inverse:        #f4f2ec;
+  --text-inverse-muted:  rgba(244, 242, 236, 0.55);
+  --text-inverse-subtle: rgba(244, 242, 236, 0.45);
+
+  /* ─── Accents (status / categorical) ───────────── */
+  --accent:        #10b981;
+  --accent-bg:     rgba(16, 185, 129, 0.12);
+  --amber:         #f59e0b;
+  --blue:          #3b82f6;
+  --red:           #ef4444;
+  --purple:        #8b5cf6;
+  --cyan:          #06b6d4;
+
+  /* ─── Radii ────────────────────────────────────── */
+  --radius:        clamp(18px, 2vw, 26px);
+  --radius-inner:  clamp(10px, 1.2vw, 16px);
+  --radius-pill:   999px;
+
+  /* ─── Typography ───────────────────────────────── */
+  --font: 'DM Sans', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-mono: 'DM Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --fs-hero:    clamp(28px, 3.5vw, 40px);
+  --fs-heading: 14px;
+  --fs-body:    12px;
+  --fs-small:   11px;
+  --fs-micro:   10px;
+  --fs-nano:    9px;
+
+  --fw-regular:  400;
+  --fw-medium:   500;
+  --fw-semibold: 600;
+  --fw-bold:     700;
+
+  /* ─── Motion ───────────────────────────────────── */
+  --ease:     cubic-bezier(0.4, 0, 0.2, 1);
+  --dur-fast: 0.18s;
+  --dur-base: 0.28s;
+
+  /* ─── Elevation ────────────────────────────────── */
+  --shadow: 0 1px 2px rgba(15, 18, 24, 0.04),
+            0 10px 28px rgba(15, 18, 24, 0.08);
+
+  /* ─── Outer spacing (fluid gutters) ────────────── */
+  --gutter: clamp(10px, 1.4vw, 18px);
+  --pad-y:  clamp(10px, 2vh, 24px);
+  --pad-x:  clamp(10px, 2vw, 24px);
+}
+
+/* ─── Global reset (minimal) ─────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  -webkit-font-smoothing: antialiased;
+}
+/* === End inlined tokens.css ================================================ */
+
+
+/* ─── Studio layout ───────────────────────────────── */
+body { height: 100vh; overflow: hidden; display: flex;
+  gap: var(--gutter); padding: var(--pad-y) var(--pad-x); }
+
+.col-main { flex: 1; display: flex; flex-direction: column;
+  gap: var(--gutter); min-width: 0; }
+
+.header { flex: 0 0 auto; display: flex; align-items: baseline;
+  justify-content: space-between; padding: 0 4px; gap: 12px; }
+.h-left { display: flex; align-items: baseline; gap: 12px; }
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: var(--fs-nano);
+  font-weight: var(--fw-medium);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-inverse);
+  background: rgba(244, 242, 236, 0.08);
+  padding: 4px 10px;
+  border-radius: var(--radius-pill);
+  border: 1px solid rgba(244, 242, 236, 0.10);
+}
+.h-title { font-size: var(--fs-heading); font-weight: var(--fw-semibold);
+  color: var(--text-inverse-subtle); letter-spacing: -0.01em; }
+.h-byline { font-size: var(--fs-nano); color: var(--text-inverse-subtle);
+  font-weight: var(--fw-regular); letter-spacing: 0.06em;
+  text-transform: uppercase; opacity: 0.6; }
+
+/* Main panel (light, holds canvas) */
+.main-panel { flex: 1 1 0; min-height: 0; position: relative;
+  background: var(--surface-muted); border-radius: var(--radius);
+  border: 1px solid var(--border); box-shadow: var(--shadow);
+  overflow: hidden; display: flex; flex-direction: column; }
+
+.stage { flex: 1 1 0; min-height: 0; position: relative;
+  background: #06080d; display: flex; align-items: stretch;
+  justify-content: stretch; overflow: hidden; }
+.stage canvas { display: block !important; width: 100% !important;
+  height: 100% !important; cursor: crosshair; }
+
+/* Floating overlay tags inside stage */
+.stage-tag { position: absolute; top: 14px; padding: 5px 12px;
+  font-size: var(--fs-nano); font-weight: var(--fw-semibold);
+  font-family: var(--font-mono); letter-spacing: 0.10em;
+  text-transform: uppercase; color: var(--text-inverse);
+  background: rgba(20, 20, 24, 0.55); backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: var(--radius-pill); z-index: 2; }
+.stage-tag.left  { left: 14px; }
+.stage-tag.right { right: 14px;
+  display: flex; align-items: center; gap: 6px; }
+.stage-tag .dot { width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+
+.legend { position: absolute; bottom: 14px; left: 14px;
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 12px; background: rgba(20,20,24,0.55);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: var(--radius-pill); z-index: 2;
+  font-family: var(--font-mono); font-size: var(--fs-nano);
+  color: var(--text-inverse-muted); letter-spacing: 0.08em;
+  text-transform: uppercase; }
+.legend .grad { width: 80px; height: 6px; border-radius: 3px;
+  background: linear-gradient(to right,
+    rgba(40,90,180,0.3), rgba(80,180,220,0.7),
+    rgba(160,230,240,0.95), rgba(255,255,255,1)); }
+
+
+/* ─── Sidebar (dark) ─────────────────────────────── */
+.sidebar { width: 320px; min-width: 320px; display: flex;
+  flex-direction: column; gap: var(--gutter); }
+
+.sb-card { background: var(--surface-dark); border-radius: var(--radius);
+  border: 1px solid var(--border-dark); box-shadow: var(--shadow);
+  padding: 20px 22px; color: var(--text-inverse); }
+.sb-card.scrollable { flex: 1 1 0; min-height: 0; overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.08) transparent; }
+.sb-card.scrollable::-webkit-scrollbar { width: 3px; }
+.sb-card.scrollable::-webkit-scrollbar-track { background: transparent; }
+.sb-card.scrollable::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.08); border-radius: 2px; }
+
+/* Live readout pill (top of sidebar) */
+.readout {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px; border-radius: var(--radius-pill);
+  background: rgba(244, 242, 236, 0.04);
+  border: 1px solid rgba(244, 242, 236, 0.08);
+  font-family: var(--font-mono); font-size: var(--fs-micro);
+  font-weight: var(--fw-medium); letter-spacing: 0.06em;
+  color: var(--text-inverse); text-transform: uppercase;
+  font-variant-numeric: tabular-nums;
+  margin-bottom: 22px;
+}
+.readout .dot { width: 7px; height: 7px; border-radius: 50%;
+  background: var(--accent); box-shadow: 0 0 10px var(--accent);
+  flex-shrink: 0; }
+.readout .stats { flex: 1; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.readout .sep { color: var(--text-inverse-subtle); margin: 0 4px; }
+
+/* Sidebar eyebrow headings */
+.sb-label { font-size: var(--fs-nano); font-weight: var(--fw-semibold);
+  letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--text-inverse-subtle); margin-bottom: 14px; }
+.sb-label:not(:first-of-type) { margin-top: 22px; }
+
+/* Slider rows */
+.ctrl { margin-bottom: 16px; }
+.ctrl:last-child { margin-bottom: 0; }
+.ctrl-head { display: flex; align-items: baseline;
+  justify-content: space-between; margin-bottom: 6px; }
+.ctrl-name { font-size: var(--fs-small); font-weight: var(--fw-medium);
+  color: var(--text-inverse); letter-spacing: -0.01em; }
+.ctrl-val {
+  font-family: var(--font-mono); font-size: var(--fs-micro);
+  font-weight: var(--fw-medium); color: var(--accent);
+  font-variant-numeric: tabular-nums; letter-spacing: 0.02em;
+  min-width: 40px; text-align: right;
+}
+.ctrl-desc { font-size: var(--fs-nano); color: var(--text-inverse-subtle);
+  margin-top: 4px; line-height: 1.5; letter-spacing: 0.02em; }
+
+/* Range input — minimalist track + thumb */
+input[type="range"] {
+  -webkit-appearance: none; appearance: none;
+  width: 100%; height: 18px; background: transparent;
+  cursor: pointer; display: block;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 2px; background: rgba(244,242,236,0.10);
+  border-radius: 2px;
+}
+input[type="range"]::-moz-range-track {
+  height: 2px; background: rgba(244,242,236,0.10);
+  border-radius: 2px;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 12px; height: 12px; border-radius: 50%;
+  background: var(--accent); margin-top: -5px;
+  border: 2px solid var(--surface-dark);
+  box-shadow: 0 0 0 1px rgba(16,185,129,0.4);
+  transition: transform var(--dur-fast) var(--ease);
+}
+input[type="range"]::-moz-range-thumb {
+  width: 12px; height: 12px; border-radius: 50%;
+  background: var(--accent); border: 2px solid var(--surface-dark);
+  box-shadow: 0 0 0 1px rgba(16,185,129,0.4);
+  transition: transform var(--dur-fast) var(--ease);
+}
+input[type="range"]:hover::-webkit-slider-thumb { transform: scale(1.15); }
+input[type="range"]:hover::-moz-range-thumb { transform: scale(1.15); }
+
+/* Footnote/detail block */
+.detail { font-size: var(--fs-nano); color: var(--text-inverse-muted);
+  line-height: 1.65; letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums; }
+.detail code {
+  font-family: var(--font-mono);
+  background: rgba(255,255,255,0.06); padding: 1px 5px;
+  border-radius: 3px; font-size: 9px; color: var(--text-inverse);
+}
+</style>
+</head>
+<body>
+
+<div class="col-main">
+  <div class="header">
+    <div class="h-left">
+      <span class="eyebrow">Studio · MS-01</span>
+      <span class="h-title">Marching Squares · Topology</span>
+    </div>
+    <div class="h-byline">Cursor-reactive iso-line field</div>
+  </div>
+
+  <div class="main-panel">
+    <div class="stage" id="stage">
+      <div class="stage-tag left">Perlin field · 16-case lookup</div>
+      <div class="stage-tag right"><span class="dot"></span>Hover to depress</div>
+      <div class="legend">
+        <span>shallow</span>
+        <div class="grad"></div>
+        <span>deep</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="sidebar">
+  <div class="sb-card scrollable">
+
+    <div class="readout">
+      <span class="dot"></span>
+      <span class="stats" id="readout">RES 60 × 40 <span class="sep">·</span> LEVELS 10 <span class="sep">·</span> 60 FPS</span>
+    </div>
+
+    <div class="sb-label">Field Resolution</div>
+
+    <div class="ctrl">
+      <div class="ctrl-head">
+        <span class="ctrl-name">Columns</span>
+        <span class="ctrl-val" id="vCols">60</span>
+      </div>
+      <input type="range" id="cols" min="20" max="80" step="1" value="60">
+    </div>
+
+    <div class="ctrl">
+      <div class="ctrl-head">
+        <span class="ctrl-name">Rows</span>
+        <span class="ctrl-val" id="vRows">40</span>
+      </div>
+      <input type="range" id="rows" min="20" max="80" step="1" value="40">
+      <div class="ctrl-desc">Sample grid is one larger than cell count in each axis.</div>
+    </div>
+
+    <div class="sb-label">Iso Layering</div>
+
+    <div class="ctrl">
+      <div class="ctrl-head">
+        <span class="ctrl-name">Iso levels</span>
+        <span class="ctrl-val" id="vLevels">10</span>
+      </div>
+      <input type="range" id="levels" min="1" max="20" step="1" value="10">
+      <div class="ctrl-desc">Number of contour passes over the same field.</div>
+    </div>
+
+    <div class="sb-label">Noise Field</div>
+
+    <div class="ctrl">
+      <div class="ctrl-head">
+        <span class="ctrl-name">Noise scale</span>
+        <span class="ctrl-val" id="vScale">2.50</span>
+      </div>
+      <input type="range" id="scale" min="0.5" max="5" step="0.05" value="2.5">
+      <div class="ctrl-desc">Spatial frequency of the Perlin lattice.</div>
+    </div>
+
+    <div class="ctrl">
+      <div class="ctrl-head">
+        <span class="ctrl-name">Animation speed</span>
+        <span class="ctrl-val" id="vSpeed">0.012</span>
+      </div>
+      <input type="range" id="speed" min="0" max="0.05" step="0.001" value="0.012">
+    </div>
+
+    <div class="sb-label">Cursor Depression</div>
+
+    <div class="ctrl">
+      <div class="ctrl-head">
+        <span class="ctrl-name">Strength</span>
+        <span class="ctrl-val" id="vStrength">0.50</span>
+      </div>
+      <input type="range" id="strength" min="0" max="1" step="0.01" value="0.5">
+      <div class="ctrl-desc">Depth subtracted from the field at the cursor.</div>
+    </div>
+
+    <div class="ctrl">
+      <div class="ctrl-head">
+        <span class="ctrl-name">Radius</span>
+        <span class="ctrl-val" id="vRadius">0.25</span>
+      </div>
+      <input type="range" id="radius" min="0.05" max="0.5" step="0.01" value="0.25">
+      <div class="ctrl-desc">Quadratic falloff radius in normalized units.</div>
+    </div>
+
+    <div class="sb-label">Notes</div>
+    <div class="detail">
+      Field built once per frame, then iterated across all iso levels.
+      Each cell maps a 4-bit corner index to <code>0–2</code> line segments
+      via the canonical 16-case lookup. Endpoints are placed by
+      linear interpolation along crossed edges, so contours read as
+      smooth curves rather than blocky stairs. Hover the canvas to
+      subtract a soft radial bowl from the field.
+    </div>
+
+  </div>
+</div>
+
+
+<script>
+// ─── Studio state — read by the p5 sketch each frame ──────────
+const params = {
+  cols: 60, rows: 40,
+  levels: 10,
+  scale: 2.5,
+  speed: 0.012,
+  strength: 0.5,
+  radius: 0.25,
+};
+
+// ─── Wire up sliders ─────────────────────────────────────────
+function bind(id, key, fmt) {
+  const slider = document.getElementById(id);
+  const label  = document.getElementById('v' + id[0].toUpperCase() + id.slice(1));
+  const update = () => {
+    const v = parseFloat(slider.value);
+    params[key] = v;
+    label.textContent = fmt(v);
+  };
+  slider.addEventListener('input', update);
+  update();
+}
+
+bind('cols',     'cols',     v => v.toFixed(0));
+bind('rows',     'rows',     v => v.toFixed(0));
+bind('levels',   'levels',   v => v.toFixed(0));
+bind('scale',    'scale',    v => v.toFixed(2));
+bind('speed',    'speed',    v => v.toFixed(3));
+bind('strength', 'strength', v => v.toFixed(2));
+bind('radius',   'radius',   v => v.toFixed(2));
+
+const readoutEl = document.getElementById('readout');
+
+
+// ─── p5 sketch (instance mode, parented to #stage) ───────────
+const sketch = (p) => {
+  let mx = -1e6, my = -1e6;     // off-screen until first hover
+  let stageEl;
+  let lastReadout = 0;
+
+  p.setup = () => {
+    stageEl = document.getElementById('stage');
+    const { width, height } = stageEl.getBoundingClientRect();
+    const c = p.createCanvas(width, height);
+    c.parent(stageEl);
+    p.frameRate(60);
+    p.noFill();
+  };
+
+  p.windowResized = () => {
+    const { width, height } = stageEl.getBoundingClientRect();
+    p.resizeCanvas(width, height);
+  };
+
+  p.mouseMoved = () => { mx = p.mouseX; my = p.mouseY; };
+  p.mouseDragged = () => { mx = p.mouseX; my = p.mouseY; };
+
+  p.draw = () => {
+    // soft trail layer instead of a hard wipe (per skill performance note)
+    p.noStroke();
+    p.fill(6, 8, 13, 50);
+    p.rect(0, 0, p.width, p.height);
+
+    const W = p.width, H = p.height;
+    const COLS = params.cols | 0;
+    const ROWS = params.rows | 0;
+    const LEVELS = params.levels | 0;
+    const cellW = W / COLS, cellH = H / ROWS;
+    const t = p.frameCount * params.speed;
+    const sc = params.scale;
+    const depth = params.strength;
+    const rad = params.radius;
+
+    // 1. Build field once per frame  ────────────────────────
+    const mxN = mx / W, myN = my / H;
+    const cursorOn = (mx >= 0 && mx <= W && my >= 0 && my <= H);
+    const field = new Array(ROWS + 1);
+    for (let r = 0; r <= ROWS; r++) {
+      const row = new Array(COLS + 1);
+      const ny = r / ROWS;
+      for (let c = 0; c <= COLS; c++) {
+        const nx = c / COLS;
+        let val = p.noise(nx * sc + t * 0.04,
+                          ny * sc * 0.8 + t * 0.03,
+                          t * 0.01);
+        if (cursorOn) {
+          const dx = nx - mxN, dy = ny - myN;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          const soft = Math.max(0, 1 - dist / rad);
+          val -= soft * soft * depth;
+        }
+        row[c] = val < 0 ? 0 : (val > 1 ? 1 : val);
+      }
+      field[r] = row;
+    }
+
+    // 2. Marching-squares pass per iso level  ──────────────
+    p.noFill();
+    for (let level = 0; level < LEVELS; level++) {
+      const iso = LEVELS === 1
+        ? 0.5
+        : 0.15 + (level / (LEVELS - 1)) * 0.65;
+      const lv = LEVELS === 1 ? 0.5 : level / (LEVELS - 1);
+
+      // emerald-tinted cool palette: shallow → deep
+      const r = 40 + lv * 200;
+      const g = 110 + lv * 140;
+      const b = 200 + lv * 55;
+      const a = 70 + lv * 110;
+      p.stroke(r, g, b, a);
+      p.strokeWeight(0.5 + lv * 1.0);
+
+      for (let R = 0; R < ROWS; R++) {
+        const y0 = R * cellH;
+        const y1 = y0 + cellH;
+        const fr0 = field[R], fr1 = field[R + 1];
+        for (let C = 0; C < COLS; C++) {
+          const x0 = C * cellW;
+          const x1 = x0 + cellW;
+          const v00 = fr0[C],     v10 = fr0[C + 1];
+          const v01 = fr1[C],     v11 = fr1[C + 1];
+          const idx = (v00 > iso ? 8 : 0) |
+                      (v10 > iso ? 4 : 0) |
+                      (v11 > iso ? 2 : 0) |
+                      (v01 > iso ? 1 : 0);
+          if (idx === 0 || idx === 15) continue;
+
+          // edge interpolation
+          const itTop    = (iso - v00) / (v10 - v00);
+          const itBot    = (iso - v01) / (v11 - v01);
+          const itLeft   = (iso - v00) / (v01 - v00);
+          const itRight  = (iso - v10) / (v11 - v10);
+
+          const tx = x0 + itTop   * cellW, ty = y0;
+          const bx = x0 + itBot   * cellW, by = y1;
+          const lx = x0,                   ly = y0 + itLeft  * cellH;
+          const rx = x1,                   ry = y0 + itRight * cellH;
+
+          switch (idx) {
+            case 1:  p.line(lx,ly, bx,by); break;
+            case 2:  p.line(rx,ry, bx,by); break;
+            case 3:  p.line(lx,ly, rx,ry); break;
+            case 4:  p.line(tx,ty, rx,ry); break;
+            case 5:  p.line(tx,ty, lx,ly); p.line(rx,ry, bx,by); break;
+            case 6:  p.line(tx,ty, bx,by); break;
+            case 7:  p.line(tx,ty, lx,ly); break;
+            case 8:  p.line(tx,ty, lx,ly); break;
+            case 9:  p.line(tx,ty, bx,by); break;
+            case 10: p.line(tx,ty, rx,ry); p.line(lx,ly, bx,by); break;
+            case 11: p.line(tx,ty, rx,ry); break;
+            case 12: p.line(lx,ly, rx,ry); break;
+            case 13: p.line(rx,ry, bx,by); break;
+            case 14: p.line(lx,ly, bx,by); break;
+          }
+        }
+      }
+    }
+
+    // cursor reticle — subtle ring at depression center
+    if (cursorOn) {
+      const ringR = rad * Math.min(W, H);
+      p.noFill();
+      p.stroke(16, 185, 129, 90);
+      p.strokeWeight(1);
+      p.circle(mx, my, ringR * 2);
+      p.stroke(16, 185, 129, 200);
+      p.strokeWeight(1.5);
+      p.circle(mx, my, 6);
+    }
+
+    // ── Live readout (throttled to ~6 Hz) ─────────────────
+    if (p.millis() - lastReadout > 160) {
+      lastReadout = p.millis();
+      const fps = p.frameRate();
+      readoutEl.innerHTML =
+        `RES ${COLS} × ${ROWS}` +
+        ` <span class="sep">·</span> ` +
+        `LEVELS ${LEVELS}` +
+        ` <span class="sep">·</span> ` +
+        `${fps.toFixed(0)} FPS`;
+    }
+  };
+};
+
+new p5(sketch);
+</script>
+
+</body>
+</html>

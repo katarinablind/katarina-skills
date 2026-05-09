@@ -1,0 +1,1052 @@
+<!--
+  Minimap · Radar HUD Studio — Katarina Blind
+  ============================================
+  Interactive demo for the minimap-radar-overlay Claude skill.
+
+  The minimap itself is the headline element — large, central, drawn with
+  full chrome (frosted glass, blur, shadow). The "world" the minimap
+  observes is implicit: the user moves the player with WASD/arrows and
+  feels the world-to-minimap transform working.
+
+  Sidebar controls cover:
+    - mode toggle (FOLLOW vs ABSOLUTE)
+    - window W (zoom)
+    - heading source (mouse vs keyboard)
+    - frustum cone
+    - POIs
+    - activation (.visible class fade-in)
+    - terrain layer (None / Filled bands / Outline contours)
+        — bands and contours are tiny inline implementations to make the
+          point that the terrain layer is pluggable; the real renderers
+          live in `filled-band-topology` and `marching-squares-topology`.
+
+  Pure 2D canvas, no build step, no p5.
+  Tokens inlined from data-mapping/shared/tokens.css (see comment).
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Minimap · Radar HUD · Studio</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+<style>
+/* === Inlined from data-mapping/shared/tokens.css ============================ */
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap');
+
+:root {
+  /* ─── Surfaces ─────────────────────────────────── */
+  --bg:            #0a0a0a;
+  --surface:       #ffffff;
+  --surface-muted: #f1f1ee;
+  --surface-dark:  #111214;
+  --border:        rgba(0, 0, 0, 0.06);
+  --border-dark:   rgba(255, 255, 255, 0.05);
+
+  /* ─── Text on light surfaces ───────────────────── */
+  --text:          #141414;
+  --text-muted:    rgba(20, 20, 20, 0.55);
+  --text-subtle:   rgba(20, 20, 20, 0.38);
+
+  /* ─── Text on dark surfaces ────────────────────── */
+  --text-inverse:        #f4f2ec;
+  --text-inverse-muted:  rgba(244, 242, 236, 0.55);
+  --text-inverse-subtle: rgba(244, 242, 236, 0.45);
+
+  /* ─── Accents (status / categorical) ───────────── */
+  --accent:        #10b981;
+  --accent-bg:     rgba(16, 185, 129, 0.12);
+  --amber:         #f59e0b;
+  --blue:          #3b82f6;
+  --red:           #ef4444;
+  --purple:        #8b5cf6;
+  --cyan:          #06b6d4;
+
+  /* ─── Radii ────────────────────────────────────── */
+  --radius:        clamp(18px, 2vw, 26px);
+  --radius-inner:  clamp(10px, 1.2vw, 16px);
+  --radius-pill:   999px;
+
+  /* ─── Typography ───────────────────────────────── */
+  --font: 'DM Sans', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-mono: 'DM Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --fs-hero:    clamp(28px, 3.5vw, 40px);
+  --fs-heading: 14px;
+  --fs-body:    12px;
+  --fs-small:   11px;
+  --fs-micro:   10px;
+  --fs-nano:    9px;
+
+  --fw-regular:  400;
+  --fw-medium:   500;
+  --fw-semibold: 600;
+  --fw-bold:     700;
+
+  /* ─── Motion ───────────────────────────────────── */
+  --ease:     cubic-bezier(0.4, 0, 0.2, 1);
+  --dur-fast: 0.18s;
+  --dur-base: 0.28s;
+
+  /* ─── Elevation ────────────────────────────────── */
+  --shadow: 0 1px 2px rgba(15, 18, 24, 0.04),
+            0 10px 28px rgba(15, 18, 24, 0.08);
+
+  /* ─── Outer spacing (fluid gutters) ────────────── */
+  --gutter: clamp(10px, 1.4vw, 18px);
+  --pad-y:  clamp(10px, 2vh, 24px);
+  --pad-x:  clamp(10px, 2vw, 24px);
+}
+
+/* ─── Global reset (minimal) ─────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  -webkit-font-smoothing: antialiased;
+}
+/* === End inlined tokens.css ================================================ */
+
+
+/* ─── Studio layout ───────────────────────────────── */
+body { height: 100vh; overflow: hidden; display: flex;
+  gap: var(--gutter); padding: var(--pad-y) var(--pad-x); }
+
+.col-main { flex: 1; display: flex; flex-direction: column;
+  gap: var(--gutter); min-width: 0; }
+
+.header { flex: 0 0 auto; display: flex; align-items: baseline;
+  justify-content: space-between; padding: 0 4px; gap: 12px; }
+.h-left { display: flex; align-items: baseline; gap: 12px; }
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: var(--fs-nano);
+  font-weight: var(--fw-medium);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-inverse);
+  background: rgba(244, 242, 236, 0.08);
+  padding: 4px 10px;
+  border-radius: var(--radius-pill);
+  border: 1px solid rgba(244, 242, 236, 0.10);
+}
+.h-title { font-size: var(--fs-heading); font-weight: var(--fw-semibold);
+  color: var(--text-inverse-subtle); letter-spacing: -0.01em; }
+.h-byline { font-size: var(--fs-nano); color: var(--text-inverse-subtle);
+  font-weight: var(--fw-regular); letter-spacing: 0.06em;
+  text-transform: uppercase; opacity: 0.6; }
+
+/* Main panel: dark stage that holds the minimap demo */
+.main-panel { flex: 1 1 0; min-height: 0; position: relative;
+  background: var(--surface-dark);
+  border-radius: var(--radius);
+  border: 1px solid var(--border-dark); box-shadow: var(--shadow);
+  overflow: hidden; display: flex; flex-direction: column; }
+
+.stage { flex: 1 1 0; min-height: 0; position: relative;
+  background:
+    radial-gradient(ellipse at 50% 45%, #1c2028 0%, #0a0c10 70%);
+  display: flex; align-items: center; justify-content: center;
+  overflow: hidden; }
+
+/* faint world preview behind the minimap so movement is perceptible */
+#world-preview {
+  position: absolute; inset: 0;
+  opacity: 0.16; pointer-events: none;
+  filter: blur(0.4px);
+}
+
+/* Floating overlay tags inside stage */
+.stage-tag { position: absolute; top: 14px; padding: 5px 12px;
+  font-size: var(--fs-nano); font-weight: var(--fw-semibold);
+  font-family: var(--font-mono); letter-spacing: 0.10em;
+  text-transform: uppercase; color: var(--text-inverse);
+  background: rgba(20, 20, 24, 0.55); backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: var(--radius-pill); z-index: 4; }
+.stage-tag.left  { left: 14px; }
+.stage-tag.right { right: 14px;
+  display: flex; align-items: center; gap: 6px; }
+.stage-tag .dot { width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+
+.hint {
+  position: absolute; bottom: 14px; left: 14px;
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 12px; background: rgba(20,20,24,0.55);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: var(--radius-pill); z-index: 4;
+  font-family: var(--font-mono); font-size: var(--fs-nano);
+  color: var(--text-inverse-muted); letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.hint kbd {
+  font-family: var(--font-mono); font-size: var(--fs-nano);
+  background: rgba(255,255,255,0.07);
+  border: 1px solid rgba(255,255,255,0.10);
+  padding: 1px 5px; border-radius: 3px;
+  color: var(--text-inverse);
+}
+
+/* THE minimap — the demo's headline element */
+.minimap {
+  position: relative; z-index: 3;
+  width: 360px; height: 360px;
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid rgba(244,242,236,0.18);
+  background: rgba(20,22,28,0.42);
+  box-shadow:
+    0 1px 0 rgba(255,255,255,0.06) inset,
+    0 30px 60px rgba(0,0,0,0.55),
+    0 4px 14px rgba(0,0,0,0.4);
+  -webkit-backdrop-filter: blur(14px) saturate(1.2);
+  backdrop-filter: blur(14px) saturate(1.2);
+  opacity: 0;
+  transition: opacity 0.6s var(--ease), transform 0.6s var(--ease);
+  transform: translateY(8px) scale(0.985);
+  pointer-events: none;
+}
+.minimap.visible {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+.minimap canvas { display: block; width: 100%; height: 100%; }
+
+/* Tiny corner label on the minimap chrome */
+.mm-corner {
+  position: absolute; top: 10px; left: 12px; z-index: 5;
+  font-family: var(--font-mono); font-size: 9px;
+  font-weight: var(--fw-medium); letter-spacing: 0.14em;
+  text-transform: uppercase; color: rgba(244,242,236,0.78);
+  text-shadow: 0 1px 2px rgba(0,0,0,0.6);
+}
+.mm-corner-r {
+  position: absolute; top: 10px; right: 12px; z-index: 5;
+  font-family: var(--font-mono); font-size: 9px;
+  font-weight: var(--fw-medium); letter-spacing: 0.14em;
+  text-transform: uppercase; color: rgba(244,242,236,0.55);
+  text-shadow: 0 1px 2px rgba(0,0,0,0.6);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Placeholder when minimap is hidden */
+.mm-hidden-hint {
+  position: absolute; z-index: 2;
+  font-family: var(--font-mono); font-size: var(--fs-nano);
+  letter-spacing: 0.16em; text-transform: uppercase;
+  color: var(--text-inverse-subtle);
+  padding: 8px 14px;
+  border: 1px dashed rgba(255,255,255,0.10);
+  border-radius: var(--radius-pill);
+  pointer-events: none;
+  opacity: 1; transition: opacity 0.4s var(--ease);
+}
+.mm-hidden-hint.gone { opacity: 0; }
+
+
+/* ─── Sidebar (dark) ─────────────────────────────── */
+.sidebar { width: 320px; min-width: 320px; display: flex;
+  flex-direction: column; gap: var(--gutter); }
+
+.sb-card { background: var(--surface-dark); border-radius: var(--radius);
+  border: 1px solid var(--border-dark); box-shadow: var(--shadow);
+  padding: 20px 22px; color: var(--text-inverse); }
+.sb-card.scrollable { flex: 1 1 0; min-height: 0; overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.08) transparent; }
+.sb-card.scrollable::-webkit-scrollbar { width: 3px; }
+.sb-card.scrollable::-webkit-scrollbar-track { background: transparent; }
+.sb-card.scrollable::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.08); border-radius: 2px; }
+
+/* Live readout pill (top of sidebar) */
+.readout {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px; border-radius: var(--radius-pill);
+  background: rgba(244, 242, 236, 0.04);
+  border: 1px solid rgba(244, 242, 236, 0.08);
+  font-family: var(--font-mono); font-size: var(--fs-micro);
+  font-weight: var(--fw-medium); letter-spacing: 0.06em;
+  color: var(--text-inverse); text-transform: uppercase;
+  font-variant-numeric: tabular-nums;
+  margin-bottom: 22px;
+}
+.readout .dot { width: 7px; height: 7px; border-radius: 50%;
+  background: var(--accent); box-shadow: 0 0 10px var(--accent);
+  flex-shrink: 0; }
+.readout .stats { flex: 1; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.readout .sep { color: var(--text-inverse-subtle); margin: 0 4px; }
+
+/* Sidebar eyebrow headings */
+.sb-label { font-size: var(--fs-nano); font-weight: var(--fw-semibold);
+  letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--text-inverse-subtle); margin-bottom: 14px; }
+.sb-label:not(:first-of-type) { margin-top: 22px; }
+
+/* Slider rows */
+.ctrl { margin-bottom: 16px; }
+.ctrl:last-child { margin-bottom: 0; }
+.ctrl-head { display: flex; align-items: baseline;
+  justify-content: space-between; margin-bottom: 6px; }
+.ctrl-name { font-size: var(--fs-small); font-weight: var(--fw-medium);
+  color: var(--text-inverse); letter-spacing: -0.01em; }
+.ctrl-val {
+  font-family: var(--font-mono); font-size: var(--fs-micro);
+  font-weight: var(--fw-medium); color: var(--accent);
+  font-variant-numeric: tabular-nums; letter-spacing: 0.02em;
+  min-width: 40px; text-align: right;
+}
+.ctrl-desc { font-size: var(--fs-nano); color: var(--text-inverse-subtle);
+  margin-top: 4px; line-height: 1.5; letter-spacing: 0.02em; }
+
+/* Range input */
+input[type="range"] {
+  -webkit-appearance: none; appearance: none;
+  width: 100%; height: 18px; background: transparent;
+  cursor: pointer; display: block;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 2px; background: rgba(244,242,236,0.10);
+  border-radius: 2px;
+}
+input[type="range"]::-moz-range-track {
+  height: 2px; background: rgba(244,242,236,0.10);
+  border-radius: 2px;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 12px; height: 12px; border-radius: 50%;
+  background: var(--accent); margin-top: -5px;
+  border: 2px solid var(--surface-dark);
+  box-shadow: 0 0 0 1px rgba(16,185,129,0.4);
+  transition: transform var(--dur-fast) var(--ease);
+}
+input[type="range"]::-moz-range-thumb {
+  width: 12px; height: 12px; border-radius: 50%;
+  background: var(--accent); border: 2px solid var(--surface-dark);
+  box-shadow: 0 0 0 1px rgba(16,185,129,0.4);
+  transition: transform var(--dur-fast) var(--ease);
+}
+input[type="range"]:hover::-webkit-slider-thumb { transform: scale(1.15); }
+input[type="range"]:hover::-moz-range-thumb { transform: scale(1.15); }
+
+/* Pill toggle (mode A/B) */
+.pill-toggle {
+  display: flex;
+  background: rgba(244,242,236,0.04);
+  border: 1px solid rgba(244,242,236,0.08);
+  border-radius: var(--radius-pill);
+  padding: 3px;
+  gap: 2px;
+}
+.pill-toggle button {
+  flex: 1; appearance: none; cursor: pointer;
+  background: transparent; border: 0; color: var(--text-inverse-subtle);
+  padding: 7px 10px; border-radius: var(--radius-pill);
+  font-family: var(--font-mono); font-size: var(--fs-nano);
+  font-weight: var(--fw-medium); letter-spacing: 0.16em;
+  text-transform: uppercase;
+  transition: background var(--dur-fast) var(--ease),
+              color var(--dur-fast) var(--ease);
+}
+.pill-toggle button.active {
+  background: var(--accent);
+  color: var(--surface-dark);
+  font-weight: var(--fw-semibold);
+}
+
+/* Radio group row */
+.radio-row { display: flex; gap: 8px; }
+.radio-row label {
+  flex: 1;
+  display: flex; align-items: center; justify-content: center;
+  gap: 6px; cursor: pointer;
+  padding: 8px 10px;
+  border-radius: var(--radius-pill);
+  background: rgba(244,242,236,0.04);
+  border: 1px solid rgba(244,242,236,0.08);
+  font-family: var(--font-mono); font-size: var(--fs-nano);
+  letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--text-inverse-subtle);
+  transition: background var(--dur-fast) var(--ease),
+              color var(--dur-fast) var(--ease);
+}
+.radio-row label.active {
+  background: rgba(16,185,129,0.14);
+  border-color: rgba(16,185,129,0.35);
+  color: var(--text-inverse);
+}
+.radio-row input { display: none; }
+
+/* Checkbox row */
+.check-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 9px 0;
+}
+.check-row .label {
+  font-size: var(--fs-small); color: var(--text-inverse);
+  font-weight: var(--fw-medium);
+}
+.check-row .desc {
+  font-size: var(--fs-nano); color: var(--text-inverse-subtle);
+  margin-top: 2px;
+}
+.check-row .text { display: flex; flex-direction: column; gap: 2px; }
+/* Switch */
+.switch {
+  position: relative; width: 34px; height: 18px;
+  background: rgba(244,242,236,0.10); border-radius: 999px;
+  cursor: pointer; transition: background var(--dur-fast) var(--ease);
+  flex-shrink: 0;
+}
+.switch::after {
+  content:''; position:absolute;
+  width: 14px; height: 14px; border-radius: 50%;
+  background: var(--text-inverse); top: 2px; left: 2px;
+  transition: transform var(--dur-fast) var(--ease);
+}
+.switch.on { background: var(--accent); }
+.switch.on::after { transform: translateX(16px); }
+
+/* Native select restyled */
+select {
+  -webkit-appearance: none; appearance: none;
+  width: 100%; padding: 9px 32px 9px 12px;
+  background: rgba(244,242,236,0.04);
+  color: var(--text-inverse);
+  border: 1px solid rgba(244,242,236,0.10);
+  border-radius: var(--radius-pill);
+  font-family: var(--font-mono); font-size: var(--fs-micro);
+  letter-spacing: 0.12em; text-transform: uppercase;
+  cursor: pointer;
+  background-image: linear-gradient(45deg, transparent 50%, rgba(244,242,236,0.55) 50%),
+                    linear-gradient(135deg, rgba(244,242,236,0.55) 50%, transparent 50%);
+  background-position: calc(100% - 16px) 50%, calc(100% - 11px) 50%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+select:focus { outline: none; border-color: rgba(16,185,129,0.55); }
+select option { background: var(--surface-dark); color: var(--text-inverse); }
+
+/* Footnote/detail block */
+.detail { font-size: var(--fs-nano); color: var(--text-inverse-muted);
+  line-height: 1.65; letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums; }
+.detail code {
+  font-family: var(--font-mono);
+  background: rgba(255,255,255,0.06); padding: 1px 5px;
+  border-radius: 3px; font-size: 9px; color: var(--text-inverse);
+}
+</style>
+</head>
+<body>
+
+<div class="col-main">
+  <div class="header">
+    <div class="h-left">
+      <span class="eyebrow">Studio · 06</span>
+      <span class="h-title">Minimap · Radar HUD</span>
+    </div>
+    <div class="h-byline">HUD frame · pluggable terrain</div>
+  </div>
+
+  <div class="main-panel">
+    <div class="stage" id="stage">
+      <canvas id="world-preview"></canvas>
+      <div class="stage-tag left">HUD frame · world-to-minimap transform</div>
+      <div class="stage-tag right"><span class="dot"></span>Move with WASD</div>
+
+      <div class="mm-hidden-hint" id="hidden-hint">Activation off — toggle to fade in</div>
+
+      <div class="minimap" id="minimap">
+        <span class="mm-corner">RADAR</span>
+        <span class="mm-corner-r" id="mm-mode">FOLLOW</span>
+        <canvas id="mm" width="360" height="360"></canvas>
+      </div>
+
+      <div class="hint">
+        <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move
+        <span style="opacity:.5">·</span>
+        <kbd>Q</kbd><kbd>E</kbd> turn
+        <span style="opacity:.5">·</span>
+        mouse to aim
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="sidebar">
+  <div class="sb-card scrollable">
+
+    <div class="readout">
+      <span class="dot"></span>
+      <span class="stats" id="readout">MODE FOLLOW <span class="sep">·</span> ZOOM 25.0 <span class="sep">·</span> POIs 10 <span class="sep">·</span> 60 FPS</span>
+    </div>
+
+    <div class="sb-label">Transform Mode</div>
+    <div class="ctrl">
+      <div class="pill-toggle" id="mode-toggle">
+        <button data-mode="follow" class="active">Follow</button>
+        <button data-mode="absolute">Absolute</button>
+      </div>
+      <div class="ctrl-desc" style="margin-top:8px">
+        Follow: player pinned to centre, world translates. Absolute: world origin pinned, player drifts.
+      </div>
+    </div>
+
+    <div class="sb-label">Window W (zoom)</div>
+    <div class="ctrl">
+      <div class="ctrl-head">
+        <span class="ctrl-name">Half-extent</span>
+        <span class="ctrl-val" id="vWindow">25.0</span>
+      </div>
+      <input type="range" id="window" min="5" max="50" step="0.5" value="25">
+      <div class="ctrl-desc">World units from minimap centre to edge.</div>
+    </div>
+
+    <div class="sb-label">Heading source</div>
+    <div class="ctrl">
+      <div class="radio-row" id="heading-source">
+        <label class="active"><input type="radio" name="heading" value="keys" checked>Arrow keys</label>
+        <label><input type="radio" name="heading" value="mouse">Mouse</label>
+      </div>
+      <div class="ctrl-desc" style="margin-top:8px">Q/E rotate, or aim with the cursor.</div>
+    </div>
+
+    <div class="sb-label">Layers</div>
+
+    <div class="check-row">
+      <div class="text">
+        <span class="label">View-frustum cone</span>
+        <span class="desc">Translucent wedge, FOV ≈ 70°.</span>
+      </div>
+      <div class="switch on" id="sw-frustum"></div>
+    </div>
+
+    <div class="check-row">
+      <div class="text">
+        <span class="label">POI markers</span>
+        <span class="desc">10 fixed-world dots; cull off-circle.</span>
+      </div>
+      <div class="switch on" id="sw-pois"></div>
+    </div>
+
+    <div class="check-row">
+      <div class="text">
+        <span class="label">Activation</span>
+        <span class="desc">Adds <code>.visible</code> — fades the chrome in.</span>
+      </div>
+      <div class="switch" id="sw-active"></div>
+    </div>
+
+    <div class="sb-label">Terrain layer (pluggable)</div>
+    <div class="ctrl">
+      <select id="terrain">
+        <option value="none" selected>None — pure HUD</option>
+        <option value="bands">Filled bands (preview)</option>
+        <option value="contours">Outline contours (preview)</option>
+      </select>
+      <div class="ctrl-desc" style="margin-top:8px">
+        Bands and contours are tiny inline mocks — see <code>filled-band-topology</code>
+        and <code>marching-squares-topology</code> for the real renderers.
+      </div>
+    </div>
+
+    <div class="sb-label">Notes</div>
+    <div class="detail">
+      The minimap is the headline element — large, central, with full
+      frosted-glass chrome. Move the player with WASD or arrows; Q/E (or the
+      mouse) rotate heading. Toggle <code>FOLLOW</code> ↔ <code>ABSOLUTE</code>
+      to feel the two transform offsets. The faint preview behind the minimap
+      shows the implicit world the HUD observes; everything else (frustum
+      cone, POIs, chevron) sits inside the canvas in strict z-order.
+    </div>
+
+  </div>
+</div>
+
+<script>
+// ─── Studio state ─────────────────────────────────────────────
+const params = {
+  mode: 'follow',        // 'follow' | 'absolute'
+  W: 25,                 // window half-extent in world units
+  headingSrc: 'keys',    // 'keys' | 'mouse'
+  showFrustum: true,
+  showPOIs: true,
+  active: false,
+  terrain: 'none',       // 'none' | 'bands' | 'contours'
+};
+
+// ─── DOM refs ─────────────────────────────────────────────────
+const minimapEl = document.getElementById('minimap');
+const hiddenHintEl = document.getElementById('hidden-hint');
+const mmModeEl = document.getElementById('mm-mode');
+const readoutEl = document.getElementById('readout');
+const stageEl = document.getElementById('stage');
+
+const mm = document.getElementById('mm');
+const mctx = mm.getContext('2d');
+const wp = document.getElementById('world-preview');
+const wctx = wp.getContext('2d');
+
+// DPR-crisp minimap
+const MM = 360, R = MM / 2;
+function resizeMM(){
+  const dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+  mm.width = MM * dpr; mm.height = MM * dpr;
+  mctx.setTransform(1, 0, 0, 1, 0, 0);
+  mctx.scale(dpr, dpr);
+}
+resizeMM();
+
+function resizeWorldPreview(){
+  const r = stageEl.getBoundingClientRect();
+  const dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+  wp.width = r.width * dpr; wp.height = r.height * dpr;
+  wp.style.width = r.width + 'px'; wp.style.height = r.height + 'px';
+  wctx.setTransform(1, 0, 0, 1, 0, 0);
+  wctx.scale(dpr, dpr);
+}
+resizeWorldPreview();
+window.addEventListener('resize', () => { resizeWorldPreview(); });
+
+// ─── World ────────────────────────────────────────────────────
+const player = { x: 0, z: 0, heading: 0 };
+
+// Fixed POIs in world space
+const POIS = [
+  { x:  10, z:   4, color: '#f59e0b' },
+  { x: -14, z:   8, color: '#3b82f6' },
+  { x:   3, z: -12, color: '#10b981' },
+  { x:  18, z:  -6, color: '#ef4444' },
+  { x:  -6, z: -10, color: '#8b5cf6' },
+  { x:  12, z:  16, color: '#06b6d4' },
+  { x: -18, z:  -2, color: '#f59e0b' },
+  { x:   0, z:  20, color: '#10b981' },
+  { x:  -3, z:  -3, color: '#3b82f6' },
+  { x:  22, z:   9, color: '#ef4444' },
+];
+
+// ─── Cheap noise for the optional terrain layer ───────────────
+function hash2(x, y){
+  const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
+  return s - Math.floor(s);
+}
+function vnoise(x, y){
+  const xi = Math.floor(x), yi = Math.floor(y);
+  const xf = x - xi,        yf = y - yi;
+  const a = hash2(xi,   yi);
+  const b = hash2(xi+1, yi);
+  const c = hash2(xi,   yi+1);
+  const d = hash2(xi+1, yi+1);
+  const u = xf*xf*(3-2*xf), v = yf*yf*(3-2*yf);
+  return (a*(1-u)+b*u)*(1-v) + (c*(1-u)+d*u)*v;
+}
+function heightAt(wx, wz){
+  let h = 0, amp = 1, freq = 0.06, sum = 0;
+  for (let i = 0; i < 3; i++){
+    h += vnoise(wx * freq, wz * freq) * amp;
+    sum += amp; amp *= 0.5; freq *= 2;
+  }
+  return h / sum;            // 0..1
+}
+
+// ─── Input ────────────────────────────────────────────────────
+const keys = {};
+addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  keys[k] = true;
+  if (['arrowup','arrowdown','arrowleft','arrowright',' '].includes(e.key.toLowerCase()
+      ?? e.key)) {
+    // some browsers report ' ' for space; map arrow keys explicitly
+  }
+  if (e.key === 'ArrowUp')    keys['w'] = true;
+  if (e.key === 'ArrowDown')  keys['s'] = true;
+  if (e.key === 'ArrowLeft')  keys['q'] = true;
+  if (e.key === 'ArrowRight') keys['e'] = true;
+  // prevent page scroll on arrows / space
+  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key)) e.preventDefault();
+});
+addEventListener('keyup', e => {
+  const k = e.key.toLowerCase();
+  keys[k] = false;
+  if (e.key === 'ArrowUp')    keys['w'] = false;
+  if (e.key === 'ArrowDown')  keys['s'] = false;
+  if (e.key === 'ArrowLeft')  keys['q'] = false;
+  if (e.key === 'ArrowRight') keys['e'] = false;
+});
+
+// Mouse-aim heading (only used when headingSrc === 'mouse')
+let mouseHeading = 0;
+stageEl.addEventListener('mousemove', e => {
+  const r = stageEl.getBoundingClientRect();
+  const cx = r.left + r.width / 2;
+  const cy = r.top  + r.height / 2;
+  mouseHeading = Math.atan2(e.clientX - cx, -(e.clientY - cy));
+});
+
+// ─── Controls wiring ──────────────────────────────────────────
+// Mode toggle
+const modeButtons = document.querySelectorAll('#mode-toggle button');
+modeButtons.forEach(b => b.addEventListener('click', () => {
+  params.mode = b.dataset.mode;
+  modeButtons.forEach(x => x.classList.toggle('active', x === b));
+  mmModeEl.textContent = params.mode.toUpperCase();
+}));
+
+// Window slider
+const wSlider = document.getElementById('window');
+const wVal = document.getElementById('vWindow');
+wSlider.addEventListener('input', () => {
+  params.W = parseFloat(wSlider.value);
+  wVal.textContent = params.W.toFixed(1);
+});
+
+// Heading source radios
+const headingLabels = document.querySelectorAll('#heading-source label');
+headingLabels.forEach(l => l.addEventListener('click', () => {
+  const v = l.querySelector('input').value;
+  params.headingSrc = v;
+  headingLabels.forEach(x => x.classList.toggle('active', x === l));
+}));
+
+// Switches
+function bindSwitch(id, key, onChange){
+  const el = document.getElementById(id);
+  el.addEventListener('click', () => {
+    params[key] = !params[key];
+    el.classList.toggle('on', params[key]);
+    if (onChange) onChange(params[key]);
+  });
+}
+bindSwitch('sw-frustum', 'showFrustum');
+bindSwitch('sw-pois',    'showPOIs');
+bindSwitch('sw-active',  'active', v => {
+  minimapEl.classList.toggle('visible', v);
+  hiddenHintEl.classList.toggle('gone', v);
+});
+
+// Terrain select
+document.getElementById('terrain').addEventListener('change', e => {
+  params.terrain = e.target.value;
+});
+
+// ─── Minimap drawing ──────────────────────────────────────────
+function worldToMM(x, z){
+  if (params.mode === 'follow'){
+    return [R + (x - player.x) / params.W * R,
+            R + (z - player.z) / params.W * R];
+  }
+  return [R + x / params.W * R,
+          R + z / params.W * R];
+}
+
+// Tiny inline filled-bands renderer (preview only — see
+// `filled-band-topology` for the real one).
+const BANDS = 9;
+const BAND_PAL = [
+  [22,28,36],[28,38,46],[34,50,58],[40,64,68],
+  [54,82,78],[72,100,90],[96,118,102],[130,140,118],[170,168,140]
+];
+function drawBands(){
+  const STRIDE = 4;                // chunky on purpose, this is a preview
+  const img = mctx.createImageData(MM, MM);
+  const d = img.data;
+  for (let py = 0; py < MM; py += STRIDE){
+    for (let px = 0; px < MM; px += STRIDE){
+      let wx, wz;
+      if (params.mode === 'follow'){
+        wx = player.x + (px - R) / R * params.W;
+        wz = player.z + (py - R) / R * params.W;
+      } else {
+        wx = (px - R) / R * params.W;
+        wz = (py - R) / R * params.W;
+      }
+      const h = heightAt(wx, wz);
+      const bi = Math.max(0, Math.min(BANDS - 1, Math.floor(h * BANDS)));
+      const [r, g, b] = BAND_PAL[bi];
+      for (let dy = 0; dy < STRIDE; dy++){
+        for (let dx = 0; dx < STRIDE; dx++){
+          const o = ((py + dy) * MM + (px + dx)) * 4;
+          d[o]   = r; d[o+1] = g; d[o+2] = b; d[o+3] = 220;
+        }
+      }
+    }
+  }
+  mctx.putImageData(img, 0, 0);
+}
+
+// Tiny inline marching-squares contour preview.
+function drawContours(){
+  // Soft dark wash
+  mctx.fillStyle = '#10141b';
+  mctx.fillRect(0, 0, MM, MM);
+
+  const COLS = 36, ROWS = 36;
+  const cellW = MM / COLS, cellH = MM / ROWS;
+  const field = new Array(ROWS + 1);
+  for (let r = 0; r <= ROWS; r++){
+    field[r] = new Array(COLS + 1);
+    for (let c = 0; c <= COLS; c++){
+      let wx, wz;
+      if (params.mode === 'follow'){
+        wx = player.x + (c / COLS - 0.5) * 2 * params.W;
+        wz = player.z + (r / ROWS - 0.5) * 2 * params.W;
+      } else {
+        wx = (c / COLS - 0.5) * 2 * params.W;
+        wz = (r / ROWS - 0.5) * 2 * params.W;
+      }
+      field[r][c] = heightAt(wx, wz);
+    }
+  }
+  const LEVELS = 7;
+  for (let lv = 0; lv < LEVELS; lv++){
+    const iso = 0.18 + (lv / (LEVELS - 1)) * 0.6;
+    const t = lv / (LEVELS - 1);
+    const r = 60 + t * 140, g = 110 + t * 130, b = 180 + t * 70;
+    mctx.strokeStyle = `rgba(${r|0},${g|0},${b|0},${0.30 + t*0.45})`;
+    mctx.lineWidth = 0.6 + t * 0.6;
+    mctx.beginPath();
+    for (let R0 = 0; R0 < ROWS; R0++){
+      const y0 = R0 * cellH, y1 = y0 + cellH;
+      const fr0 = field[R0], fr1 = field[R0 + 1];
+      for (let C0 = 0; C0 < COLS; C0++){
+        const x0 = C0 * cellW, x1 = x0 + cellW;
+        const v00 = fr0[C0],     v10 = fr0[C0 + 1];
+        const v01 = fr1[C0],     v11 = fr1[C0 + 1];
+        const idx = (v00 > iso ? 8 : 0) | (v10 > iso ? 4 : 0) |
+                    (v11 > iso ? 2 : 0) | (v01 > iso ? 1 : 0);
+        if (idx === 0 || idx === 15) continue;
+        const itTop   = (iso - v00) / (v10 - v00);
+        const itBot   = (iso - v01) / (v11 - v01);
+        const itLeft  = (iso - v00) / (v01 - v00);
+        const itRight = (iso - v10) / (v11 - v10);
+        const tx = x0 + itTop  * cellW, ty = y0;
+        const bx = x0 + itBot  * cellW, by = y1;
+        const lx = x0,                  ly = y0 + itLeft  * cellH;
+        const rx = x1,                  ry = y0 + itRight * cellH;
+        function seg(ax, ay, bx2, by2){ mctx.moveTo(ax, ay); mctx.lineTo(bx2, by2); }
+        switch (idx){
+          case 1:  seg(lx,ly, bx,by); break;
+          case 2:  seg(rx,ry, bx,by); break;
+          case 3:  seg(lx,ly, rx,ry); break;
+          case 4:  seg(tx,ty, rx,ry); break;
+          case 5:  seg(tx,ty, lx,ly); seg(rx,ry, bx,by); break;
+          case 6:  seg(tx,ty, bx,by); break;
+          case 7:  seg(tx,ty, lx,ly); break;
+          case 8:  seg(tx,ty, lx,ly); break;
+          case 9:  seg(tx,ty, bx,by); break;
+          case 10: seg(tx,ty, rx,ry); seg(lx,ly, bx,by); break;
+          case 11: seg(tx,ty, rx,ry); break;
+          case 12: seg(lx,ly, rx,ry); break;
+          case 13: seg(rx,ry, bx,by); break;
+          case 14: seg(lx,ly, bx,by); break;
+        }
+      }
+    }
+    mctx.stroke();
+  }
+}
+
+function drawTerrain(){
+  if (params.terrain === 'bands') return drawBands();
+  if (params.terrain === 'contours') return drawContours();
+  // 'none' — flat tint, the cleanest demo of the HUD layer
+  const grad = mctx.createRadialGradient(R, R, R*0.1, R, R, R);
+  grad.addColorStop(0, 'rgba(36, 42, 52, 0.85)');
+  grad.addColorStop(1, 'rgba(14, 16, 22, 0.85)');
+  mctx.fillStyle = grad;
+  mctx.fillRect(0, 0, MM, MM);
+
+  // Soft cardinal cross so movement is visible even in 'none'
+  mctx.strokeStyle = 'rgba(244,242,236,0.05)';
+  mctx.lineWidth = 1;
+  mctx.beginPath();
+  mctx.moveTo(0, R); mctx.lineTo(MM, R);
+  mctx.moveTo(R, 0); mctx.lineTo(R, MM);
+  mctx.stroke();
+}
+
+function drawFrustum(pmx, pmz){
+  if (!params.showFrustum) return;
+  mctx.save();
+  mctx.translate(pmx, pmz);
+  mctx.rotate(-player.heading);
+  mctx.beginPath();
+  mctx.moveTo(0, 0);
+  const fov = 1.2;            // ~70 deg total
+  const range = 0.55 * R;
+  mctx.arc(0, 0, range, -Math.PI/2 - fov/2, -Math.PI/2 + fov/2);
+  mctx.closePath();
+  const grad = mctx.createRadialGradient(0, 0, 0, 0, 0, range);
+  grad.addColorStop(0, 'rgba(255,240,200,0.32)');
+  grad.addColorStop(1, 'rgba(255,240,200,0)');
+  mctx.fillStyle = grad;
+  mctx.fill();
+  mctx.restore();
+}
+
+function drawPOIs(){
+  if (!params.showPOIs) return;
+  for (const p of POIS){
+    const [mx, mz] = worldToMM(p.x, p.z);
+    const dx = mx - R, dz = mz - R;
+    if (dx*dx + dz*dz > (R - 4) * (R - 4)) continue;     // cull off-circle
+    mctx.shadowColor = p.color;
+    mctx.shadowBlur = 8;
+    mctx.fillStyle = p.color;
+    mctx.beginPath(); mctx.arc(mx, mz, 3.2, 0, Math.PI*2); mctx.fill();
+    mctx.shadowBlur = 0;
+    // Inner highlight
+    mctx.fillStyle = 'rgba(255,255,255,0.65)';
+    mctx.beginPath(); mctx.arc(mx - 0.8, mz - 0.8, 1, 0, Math.PI*2); mctx.fill();
+  }
+}
+
+function drawPlayer(pmx, pmz){
+  mctx.save();
+  mctx.translate(pmx, pmz);
+  mctx.rotate(-player.heading);
+  mctx.shadowColor = 'rgba(0,0,0,0.55)';
+  mctx.shadowBlur = 5; mctx.shadowOffsetY = 1;
+  mctx.fillStyle = 'rgba(225,105,30,0.98)';
+  mctx.beginPath();
+  mctx.moveTo(0, -10);
+  mctx.lineTo(7, 7);
+  mctx.lineTo(0, 3);
+  mctx.lineTo(-7, 7);
+  mctx.closePath();
+  mctx.fill();
+  mctx.shadowColor = 'transparent';
+  mctx.lineWidth = 1.2;
+  mctx.strokeStyle = 'rgba(255,248,235,0.92)';
+  mctx.stroke();
+  mctx.restore();
+}
+
+function drawCircleClip(){
+  // Subtle inner ring so the radius is felt
+  mctx.strokeStyle = 'rgba(244,242,236,0.10)';
+  mctx.lineWidth = 1;
+  mctx.beginPath(); mctx.arc(R, R, R - 1.5, 0, Math.PI*2); mctx.stroke();
+  mctx.strokeStyle = 'rgba(244,242,236,0.05)';
+  mctx.beginPath(); mctx.arc(R, R, R * 0.66, 0, Math.PI*2); mctx.stroke();
+  mctx.beginPath(); mctx.arc(R, R, R * 0.33, 0, Math.PI*2); mctx.stroke();
+}
+
+function drawWorldPreview(){
+  // Faint top-down preview behind the minimap so chevron motion ↔ world
+  // motion is perceptible at a glance. Always uses follow-mode framing
+  // so the preview shifts as the player moves.
+  const w = wp.clientWidth, h = wp.clientHeight;
+  if (!w || !h) return;
+  wctx.clearRect(0, 0, w, h);
+
+  // Center origin
+  wctx.save();
+  wctx.translate(w / 2, h / 2);
+
+  // Soft starfield-ish dots laid out by world position; visible over a
+  // wider field than the minimap shows so the user sees grid points
+  // sliding through frame.
+  const PVW = 80;                 // preview half-extent in world units
+  const scale = Math.min(w, h) / (PVW * 2);
+  // Faint axis lines
+  wctx.strokeStyle = 'rgba(244,242,236,0.05)';
+  wctx.lineWidth = 1;
+  for (let g = -PVW; g <= PVW; g += 5){
+    wctx.beginPath();
+    wctx.moveTo((g - player.x) * scale, -h);
+    wctx.lineTo((g - player.x) * scale,  h);
+    wctx.stroke();
+    wctx.beginPath();
+    wctx.moveTo(-w, (g - player.z) * scale);
+    wctx.lineTo( w, (g - player.z) * scale);
+    wctx.stroke();
+  }
+
+  // POI ghosts in the world preview
+  for (const p of POIS){
+    const x = (p.x - player.x) * scale;
+    const z = (p.z - player.z) * scale;
+    wctx.fillStyle = p.color;
+    wctx.beginPath(); wctx.arc(x, z, 4, 0, Math.PI*2); wctx.fill();
+  }
+
+  wctx.restore();
+}
+
+// ─── Loop ─────────────────────────────────────────────────────
+let last = performance.now(), frameAccum = 0, fps = 60, fcount = 0;
+function tick(now){
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  frameAccum += dt; fcount++;
+  if (frameAccum >= 0.5){
+    fps = fcount / frameAccum;
+    frameAccum = 0; fcount = 0;
+  }
+
+  // Heading update
+  if (params.headingSrc === 'keys'){
+    const rs = 1.8 * dt;
+    if (keys.q) player.heading -= rs;
+    if (keys.e) player.heading += rs;
+  } else {
+    // Smooth toward mouseHeading
+    let dh = mouseHeading - player.heading;
+    while (dh >  Math.PI) dh -= Math.PI * 2;
+    while (dh < -Math.PI) dh += Math.PI * 2;
+    player.heading += dh * Math.min(1, dt * 8);
+  }
+
+  // Movement (always WASD/arrow-driven; W = forward)
+  const sp = 8 * dt;
+  const fwdX = Math.sin(player.heading);
+  const fwdZ = -Math.cos(player.heading);
+  if (keys.w) { player.x += fwdX * sp; player.z += fwdZ * sp; }
+  if (keys.s) { player.x -= fwdX * sp; player.z -= fwdZ * sp; }
+  if (keys.a) { player.x -= fwdZ * sp; player.z += fwdX * sp; }
+  if (keys.d) { player.x += fwdZ * sp; player.z -= fwdX * sp; }
+
+  // World preview behind the minimap
+  drawWorldPreview();
+
+  // Minimap canvas
+  mctx.clearRect(0, 0, MM, MM);
+  drawTerrain();
+  drawCircleClip();
+
+  // Player position on the minimap (depends on mode)
+  const [pmx, pmz] = params.mode === 'follow'
+    ? [R, R]
+    : worldToMM(player.x, player.z);
+
+  drawFrustum(pmx, pmz);
+  drawPOIs();
+  drawPlayer(pmx, pmz);
+
+  // Readout
+  readoutEl.innerHTML =
+    `MODE ${params.mode.toUpperCase()}` +
+    ` <span class="sep">·</span> ZOOM ${params.W.toFixed(1)}` +
+    ` <span class="sep">·</span> POIs ${params.showPOIs ? POIS.length : 0}` +
+    ` <span class="sep">·</span> ${fps.toFixed(0)} FPS`;
+
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+</script>
+
+</body>
+</html>

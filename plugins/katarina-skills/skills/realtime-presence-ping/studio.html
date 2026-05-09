@@ -1,0 +1,961 @@
+<!--
+  Realtime Presence Ping · Bubble Signal — Studio
+  ===============================================
+  Interactive demo for the realtime-presence-ping Claude skill.
+
+  Open this file in two browser tabs (file:// or python3 -m http.server).
+  Press the Send Ping button in tab A — a bubble appears in BOTH tabs.
+  Each tab is auto-assigned a label (TAB A, TAB B, ...) based on tab open
+  order. Peer count is discovered via a periodic heartbeat broadcast.
+
+  Transport: BroadcastChannel (same-browser, multi-tab). The lifecycle
+  (trigger → emit → receive → render → decay) is identical to what
+  telefishin does over Supabase Realtime — the transport is the only
+  pluggable bit.
+
+  The bubble visual logic is lifted from telefishin's
+  components/tank/BubbleLayer.tsx — vertical trail of bubbles staggered
+  in time, rising and fading, with the same per-trail cleanup discipline.
+  Motif select swaps Bubble / Heart / Ripple / Splash; the lifecycle
+  shape is the same for all of them.
+
+  Tokens inlined from data-mapping/shared/tokens.css (see comment).
+  Self-contained — no build step, no server.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Realtime Presence Ping · Bubble Signal · Studio</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+<style>
+/* === Inlined from data-mapping/shared/tokens.css ============================ */
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap');
+
+:root {
+  --bg:            #0a0a0a;
+  --surface:       #ffffff;
+  --surface-muted: #f1f1ee;
+  --surface-dark:  #111214;
+  --border:        rgba(0, 0, 0, 0.06);
+  --border-dark:   rgba(255, 255, 255, 0.05);
+  --text:          #141414;
+  --text-muted:    rgba(20, 20, 20, 0.55);
+  --text-subtle:   rgba(20, 20, 20, 0.38);
+  --text-inverse:        #f4f2ec;
+  --text-inverse-muted:  rgba(244, 242, 236, 0.55);
+  --text-inverse-subtle: rgba(244, 242, 236, 0.45);
+  --accent:        #10b981;
+  --accent-bg:     rgba(16, 185, 129, 0.12);
+  --amber:         #f59e0b;
+  --blue:          #3b82f6;
+  --red:           #ef4444;
+  --purple:        #8b5cf6;
+  --cyan:          #06b6d4;
+  --radius:        clamp(18px, 2vw, 26px);
+  --radius-inner:  clamp(10px, 1.2vw, 16px);
+  --radius-pill:   999px;
+  --font: 'DM Sans', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-mono: 'DM Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --fs-hero:    clamp(28px, 3.5vw, 40px);
+  --fs-heading: 14px;
+  --fs-body:    12px;
+  --fs-small:   11px;
+  --fs-micro:   10px;
+  --fs-nano:    9px;
+  --fw-regular:  400;
+  --fw-medium:   500;
+  --fw-semibold: 600;
+  --fw-bold:     700;
+  --ease:     cubic-bezier(0.4, 0, 0.2, 1);
+  --dur-fast: 0.18s;
+  --dur-base: 0.28s;
+  --shadow: 0 1px 2px rgba(15, 18, 24, 0.04),
+            0 10px 28px rgba(15, 18, 24, 0.08);
+  --gutter: clamp(10px, 1.4vw, 18px);
+  --pad-y:  clamp(10px, 2vh, 24px);
+  --pad-x:  clamp(10px, 2vw, 24px);
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  -webkit-font-smoothing: antialiased;
+}
+/* === End inlined tokens.css ================================================ */
+
+
+/* ─── Studio layout (flex on body, direct parent of col-main + sidebar) ──── */
+body { height: 100vh; overflow: hidden; display: flex;
+  gap: var(--gutter); padding: var(--pad-y) var(--pad-x); }
+
+.col-main { flex: 1; display: flex; flex-direction: column;
+  gap: var(--gutter); min-width: 0; }
+
+.header { flex: 0 0 auto; display: flex; align-items: baseline;
+  justify-content: space-between; padding: 0 4px; gap: 12px; }
+.h-left { display: flex; align-items: baseline; gap: 12px; }
+.eyebrow {
+  font-family: var(--font-mono); font-size: var(--fs-nano);
+  font-weight: var(--fw-medium); letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--text-inverse);
+  background: rgba(244, 242, 236, 0.08); padding: 4px 10px;
+  border-radius: var(--radius-pill);
+  border: 1px solid rgba(244, 242, 236, 0.10);
+}
+.h-title { font-size: var(--fs-heading); font-weight: var(--fw-semibold);
+  color: var(--text-inverse-subtle); letter-spacing: -0.01em; }
+.h-byline { font-size: var(--fs-nano); color: var(--text-inverse-subtle);
+  font-weight: var(--fw-regular); letter-spacing: 0.06em;
+  text-transform: uppercase; opacity: 0.6; }
+
+.main-panel { flex: 1 1 0; min-height: 0; position: relative;
+  background: var(--surface-muted); border-radius: var(--radius);
+  border: 1px solid var(--border); box-shadow: var(--shadow);
+  overflow: hidden; display: flex; flex-direction: column; }
+
+.stage { flex: 1 1 0; min-height: 0; position: relative;
+  background: radial-gradient(ellipse at 50% 100%,
+              #1a4d6e 0%, #0e2c45 60%, #07182a 100%);
+  display: block; overflow: hidden; cursor: crosshair; }
+.stage.click-mode { cursor: crosshair; }
+.stage.random-mode { cursor: default; }
+
+.stage-tag { position: absolute; top: 14px; padding: 5px 12px;
+  font-size: var(--fs-nano); font-weight: var(--fw-semibold);
+  font-family: var(--font-mono); letter-spacing: 0.10em;
+  text-transform: uppercase; color: var(--text-inverse);
+  background: rgba(20, 20, 24, 0.55); backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: var(--radius-pill); z-index: 5;
+  pointer-events: none;
+}
+.stage-tag.left  { left: 14px; }
+.stage-tag.right { right: 14px;
+  display: flex; align-items: center; gap: 6px; }
+.stage-tag .dot { width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+
+.legend { position: absolute; bottom: 14px; left: 14px;
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 12px; background: rgba(20,20,24,0.55);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: var(--radius-pill); z-index: 5;
+  font-family: var(--font-mono); font-size: var(--fs-nano);
+  color: var(--text-inverse-muted); letter-spacing: 0.08em;
+  text-transform: uppercase; pointer-events: none; }
+
+
+/* ─── Bubble visuals ────────────────────────────────────────── */
+/* Lifted from telefishin/components/tank/BubbleLayer.tsx:
+   trail of staggered bubbles rising from below the visible area,
+   fading at the top. The motion/react animation is reproduced
+   here as a vanilla CSS @keyframes. */
+.trail {
+  position: absolute;
+  bottom: -120px;
+  transform: translateX(-50%);
+  pointer-events: none;
+  z-index: 2;
+}
+.trail .bubble-dot {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  border-radius: 50%;
+  transform: translate(-50%, 0) scale(0.5);
+  opacity: 0;
+  animation: bubble-rise var(--life, 3000ms) ease-out forwards;
+  animation-delay: var(--delay, 0ms);
+}
+@keyframes bubble-rise {
+  0%   { transform: translate(-50%, 0)              scale(0.5); opacity: 0; }
+  15%  { opacity: 0.85; }
+  100% { transform: translate(-50%, calc(-1 * var(--rise, 100vh)))
+                                                    scale(1.0); opacity: 0; }
+}
+
+/* Heart variant — same lifecycle, different shape */
+.trail .heart-dot {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  width: var(--size, 22px); height: var(--size, 22px);
+  background: var(--accent-color, #ff5e7a);
+  transform: translate(-50%, 0) rotate(-45deg) scale(0.5);
+  opacity: 0;
+  animation: heart-rise var(--life, 3000ms) ease-out forwards;
+  animation-delay: var(--delay, 0ms);
+}
+.trail .heart-dot::before,
+.trail .heart-dot::after {
+  content: ''; position: absolute;
+  width: 100%; height: 100%; background: inherit;
+  border-radius: 50%;
+}
+.trail .heart-dot::before { top: -50%; left: 0; }
+.trail .heart-dot::after  { top: 0;     left: 50%; }
+@keyframes heart-rise {
+  0%   { transform: translate(-50%, 0) rotate(-45deg)              scale(0.5); opacity: 0; }
+  15%  { opacity: 0.95; }
+  100% { transform: translate(-50%, calc(-1 * var(--rise, 100vh))) rotate(-45deg) scale(1.0); opacity: 0; }
+}
+
+/* Ripple — single expanding ring at the click point */
+.ripple {
+  position: absolute;
+  border: 2px solid var(--accent-color, #fff);
+  border-radius: 50%;
+  pointer-events: none;
+  transform: translate(-50%, -50%) scale(0.1);
+  opacity: 0.95;
+  animation: ripple-expand var(--life, 1800ms) ease-out forwards;
+  z-index: 2;
+}
+@keyframes ripple-expand {
+  0%   { transform: translate(-50%, -50%) scale(0.1); opacity: 0.95; }
+  100% { transform: translate(-50%, -50%) scale(8.0); opacity: 0; }
+}
+
+/* Splash — multiple radiating particles from the point */
+.splash-particle {
+  position: absolute;
+  width: var(--size, 14px); height: var(--size, 14px);
+  background: var(--accent-color, #ffcc66);
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  animation: splash-fly var(--life, 1500ms) cubic-bezier(0.2, 0.6, 0.4, 1) forwards;
+  z-index: 2;
+}
+@keyframes splash-fly {
+  0%   { transform: translate(-50%, -50%) translate(0, 0) scale(0.4); opacity: 0; }
+  20%  { opacity: 1; }
+  100% { transform: translate(-50%, -50%)
+                    translate(var(--dx, 80px), calc(var(--dy, -60px) + 80px))
+                    scale(0.2); opacity: 0; }
+}
+
+
+/* ─── Sidebar (dark) ─────────────────────────────── */
+.sidebar { width: 320px; min-width: 320px; display: flex;
+  flex-direction: column; gap: var(--gutter); }
+
+.sb-card { background: var(--surface-dark); border-radius: var(--radius);
+  border: 1px solid var(--border-dark); box-shadow: var(--shadow);
+  padding: 20px 22px; color: var(--text-inverse); }
+.sb-card.scrollable { flex: 1 1 0; min-height: 0; overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.08) transparent; }
+.sb-card.scrollable::-webkit-scrollbar { width: 3px; }
+.sb-card.scrollable::-webkit-scrollbar-track { background: transparent; }
+.sb-card.scrollable::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.08); border-radius: 2px; }
+
+.readout {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px; border-radius: var(--radius-pill);
+  background: rgba(244, 242, 236, 0.04);
+  border: 1px solid rgba(244, 242, 236, 0.08);
+  font-family: var(--font-mono); font-size: var(--fs-micro);
+  font-weight: var(--fw-medium); letter-spacing: 0.06em;
+  color: var(--text-inverse); text-transform: uppercase;
+  font-variant-numeric: tabular-nums;
+  margin-bottom: 22px;
+}
+.readout .dot { width: 7px; height: 7px; border-radius: 50%;
+  background: var(--accent); box-shadow: 0 0 10px var(--accent);
+  flex-shrink: 0; }
+.readout .stats { flex: 1; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.readout .sep { color: var(--text-inverse-subtle); margin: 0 4px; }
+
+.tab-pill {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 6px 14px;
+  background: var(--accent-bg);
+  border: 1px solid rgba(16, 185, 129, 0.35);
+  border-radius: var(--radius-pill);
+  font-family: var(--font-mono); font-size: var(--fs-micro);
+  font-weight: var(--fw-semibold); letter-spacing: 0.16em;
+  color: var(--accent); text-transform: uppercase;
+  margin-right: 8px;
+}
+.peers-pill {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 6px 14px;
+  background: rgba(244, 242, 236, 0.04);
+  border: 1px solid rgba(244, 242, 236, 0.10);
+  border-radius: var(--radius-pill);
+  font-family: var(--font-mono); font-size: var(--fs-micro);
+  font-weight: var(--fw-semibold); letter-spacing: 0.10em;
+  color: var(--text-inverse-muted); text-transform: uppercase;
+}
+.pill-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 22px; }
+
+.sb-label { font-size: var(--fs-nano); font-weight: var(--fw-semibold);
+  letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--text-inverse-subtle); margin-bottom: 14px; }
+.sb-label:not(:first-of-type) { margin-top: 22px; }
+
+.send-btn {
+  width: 100%; padding: 14px 0;
+  background: var(--accent); color: #062a1f;
+  border: none; border-radius: var(--radius-pill);
+  font-family: var(--font-mono); font-size: var(--fs-small);
+  font-weight: var(--fw-semibold); letter-spacing: 0.18em;
+  text-transform: uppercase; cursor: pointer;
+  box-shadow: 0 0 0 1px rgba(16,185,129,0.3),
+              0 4px 14px rgba(16,185,129,0.30);
+  transition: transform var(--dur-fast) var(--ease),
+              box-shadow var(--dur-fast) var(--ease);
+  margin-bottom: 8px;
+}
+.send-btn:hover { transform: translateY(-1px);
+  box-shadow: 0 0 0 1px rgba(16,185,129,0.35),
+              0 6px 18px rgba(16,185,129,0.40); }
+.send-btn:active { transform: translateY(0) scale(0.98); }
+
+.radio-group {
+  display: flex; gap: 4px; padding: 4px;
+  background: rgba(244,242,236,0.04);
+  border: 1px solid rgba(244,242,236,0.08);
+  border-radius: var(--radius-pill);
+  margin-bottom: 8px;
+}
+.radio-group label {
+  flex: 1; padding: 8px 0; text-align: center;
+  background: transparent; border: none;
+  color: var(--text-inverse-muted);
+  font-family: var(--font-mono); font-size: var(--fs-micro);
+  font-weight: var(--fw-semibold); letter-spacing: 0.12em;
+  text-transform: uppercase; border-radius: var(--radius-pill);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease),
+              color var(--dur-fast) var(--ease);
+}
+.radio-group label:hover { color: var(--text-inverse); }
+.radio-group input[type="radio"] { display: none; }
+.radio-group input[type="radio"]:checked + label,
+.radio-group label.active {
+  background: var(--accent); color: #062a1f;
+  box-shadow: 0 0 0 1px rgba(16,185,129,0.3),
+              0 4px 12px rgba(16,185,129,0.25);
+}
+
+.ctrl { margin-bottom: 16px; }
+.ctrl:last-child { margin-bottom: 0; }
+.ctrl-head { display: flex; align-items: baseline;
+  justify-content: space-between; margin-bottom: 6px; }
+.ctrl-name { font-size: var(--fs-small); font-weight: var(--fw-medium);
+  color: var(--text-inverse); letter-spacing: -0.01em; }
+.ctrl-val {
+  font-family: var(--font-mono); font-size: var(--fs-micro);
+  font-weight: var(--fw-medium); color: var(--accent);
+  font-variant-numeric: tabular-nums; letter-spacing: 0.02em;
+  min-width: 40px; text-align: right;
+}
+.ctrl-desc { font-size: var(--fs-nano); color: var(--text-inverse-subtle);
+  margin-top: 4px; line-height: 1.5; letter-spacing: 0.02em; }
+
+input[type="range"] {
+  -webkit-appearance: none; appearance: none;
+  width: 100%; height: 18px; background: transparent;
+  cursor: pointer; display: block;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 2px; background: rgba(244,242,236,0.10); border-radius: 2px;
+}
+input[type="range"]::-moz-range-track {
+  height: 2px; background: rgba(244,242,236,0.10); border-radius: 2px;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 12px; height: 12px; border-radius: 50%;
+  background: var(--accent); margin-top: -5px;
+  border: 2px solid var(--surface-dark);
+  box-shadow: 0 0 0 1px rgba(16,185,129,0.4);
+  transition: transform var(--dur-fast) var(--ease);
+}
+input[type="range"]::-moz-range-thumb {
+  width: 12px; height: 12px; border-radius: 50%;
+  background: var(--accent); border: 2px solid var(--surface-dark);
+  box-shadow: 0 0 0 1px rgba(16,185,129,0.4);
+  transition: transform var(--dur-fast) var(--ease);
+}
+input[type="range"]:hover::-webkit-slider-thumb { transform: scale(1.15); }
+input[type="range"]:hover::-moz-range-thumb { transform: scale(1.15); }
+
+select {
+  width: 100%; padding: 8px 10px;
+  background: rgba(244,242,236,0.04);
+  color: var(--text-inverse);
+  border: 1px solid rgba(244,242,236,0.10);
+  border-radius: var(--radius-inner);
+  font-family: var(--font-mono); font-size: var(--fs-micro);
+  letter-spacing: 0.04em; cursor: pointer;
+  -webkit-appearance: none; appearance: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' stroke='rgba(244,242,236,0.55)' stroke-width='1.4' fill='none'/></svg>");
+  background-repeat: no-repeat; background-position: right 12px center;
+  padding-right: 28px;
+}
+
+input[type="color"] {
+  width: 100%; height: 36px; padding: 2px;
+  background: rgba(244,242,236,0.04);
+  border: 1px solid rgba(244,242,236,0.10);
+  border-radius: var(--radius-inner);
+  cursor: pointer;
+}
+input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
+input[type="color"]::-webkit-color-swatch { border: none;
+  border-radius: calc(var(--radius-inner) - 4px); }
+
+.checkbox-row {
+  display: flex; align-items: center; gap: 10px;
+  font-size: var(--fs-small); color: var(--text-inverse);
+  cursor: pointer; user-select: none;
+}
+.checkbox-row input[type="checkbox"] {
+  -webkit-appearance: none; appearance: none;
+  width: 14px; height: 14px;
+  border: 1px solid rgba(244,242,236,0.25);
+  border-radius: 3px; background: transparent;
+  cursor: pointer; position: relative;
+  transition: all var(--dur-fast) var(--ease);
+}
+.checkbox-row input[type="checkbox"]:checked {
+  background: var(--accent); border-color: var(--accent);
+}
+.checkbox-row input[type="checkbox"]:checked::after {
+  content: ''; position: absolute; left: 3px; top: 0;
+  width: 5px; height: 9px;
+  border: solid var(--surface-dark);
+  border-width: 0 2px 2px 0; transform: rotate(45deg);
+}
+
+.detail { font-size: var(--fs-nano); color: var(--text-inverse-muted);
+  line-height: 1.65; letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums; }
+.detail code {
+  font-family: var(--font-mono);
+  background: rgba(255,255,255,0.06); padding: 1px 5px;
+  border-radius: 3px; font-size: 9px; color: var(--text-inverse);
+}
+.helper-note {
+  background: rgba(16, 185, 129, 0.08);
+  border: 1px solid rgba(16, 185, 129, 0.18);
+  border-radius: var(--radius-inner);
+  padding: 10px 12px;
+  font-size: var(--fs-nano);
+  color: var(--text-inverse-muted);
+  line-height: 1.6;
+  margin-bottom: 22px;
+}
+.helper-note strong { color: var(--accent); font-weight: var(--fw-semibold); }
+</style>
+</head>
+<body>
+
+<div class="col-main">
+  <div class="header">
+    <div class="h-left">
+      <span class="eyebrow">Studio · 14</span>
+      <span class="h-title">Realtime Presence Ping &middot; Bubble Signal</span>
+    </div>
+    <div class="h-byline">trigger · emit · receive · render · decay</div>
+  </div>
+
+  <div class="main-panel">
+    <div class="stage random-mode" id="stage">
+      <div class="stage-tag left" id="stageTag">VIEWPORT · click or send-ping</div>
+      <div class="stage-tag right"><span class="dot"></span>BroadcastChannel · presence-ping</div>
+      <div class="legend" id="legend">spawn → animationend → remove</div>
+    </div>
+  </div>
+</div>
+
+<div class="sidebar">
+  <div class="sb-card scrollable">
+
+    <div class="readout">
+      <span class="dot"></span>
+      <span class="stats" id="readout">TAB A <span class="sep">&middot;</span> PEERS 0 <span class="sep">&middot;</span> SENT 0 <span class="sep">&middot;</span> RECV 0 <span class="sep">&middot;</span> 60 FPS</span>
+    </div>
+
+    <div class="pill-row">
+      <span class="tab-pill" id="tabPill">TAB A</span>
+      <span class="peers-pill" id="peersPill">OTHER TABS: 0</span>
+    </div>
+
+    <div class="helper-note">
+      Open this URL in <strong>another tab</strong> to see pings cross between them.
+      Each tab is a different "user." Transport is BroadcastChannel; works only inside
+      this browser.
+    </div>
+
+    <button class="send-btn" id="sendBtn" type="button">Send Ping</button>
+
+    <div class="sb-label">Position mode</div>
+    <div class="radio-group" id="modeGroup">
+      <input type="radio" name="posmode" value="random" id="posRandom" checked>
+      <label for="posRandom" class="active">Random</label>
+      <input type="radio" name="posmode" value="click" id="posClick">
+      <label for="posClick">Click-to-place</label>
+    </div>
+
+    <div class="sb-label">Visual motif</div>
+    <div class="ctrl">
+      <select id="motif">
+        <option value="bubble" selected>A &middot; Bubble</option>
+        <option value="heart">B &middot; Heart</option>
+        <option value="ripple">C &middot; Ripple</option>
+        <option value="splash">D &middot; Splash</option>
+      </select>
+      <div class="ctrl-desc">Same lifecycle for every motif &mdash; only the CSS animation swaps.</div>
+    </div>
+
+    <div class="ctrl">
+      <div class="ctrl-head">
+        <span class="ctrl-name">Bubble size</span>
+        <span class="ctrl-val" id="vSize">22 px</span>
+      </div>
+      <input type="range" id="size" min="10" max="80" step="1" value="22">
+    </div>
+
+    <div class="ctrl">
+      <div class="ctrl-head">
+        <span class="ctrl-name">Bubble lifetime</span>
+        <span class="ctrl-val" id="vLife">2400 ms</span>
+      </div>
+      <input type="range" id="life" min="500" max="5000" step="50" value="2400">
+      <div class="ctrl-desc">Drives the CSS animation duration <em>and</em> the removal timer.</div>
+    </div>
+
+    <div class="ctrl">
+      <div class="ctrl-head">
+        <span class="ctrl-name">Color</span>
+        <span class="ctrl-val" id="vColor">#a4d3ee</span>
+      </div>
+      <input type="color" id="color" value="#a4d3ee">
+    </div>
+
+    <div class="sb-label">Auto-ping</div>
+    <label class="checkbox-row">
+      <input type="checkbox" id="autoPing">
+      Send a ping on a timer
+    </label>
+    <div class="ctrl" style="margin-top: 12px;">
+      <div class="ctrl-head">
+        <span class="ctrl-name">Interval</span>
+        <span class="ctrl-val" id="vAuto">1500 ms</span>
+      </div>
+      <input type="range" id="autoInterval" min="500" max="5000" step="100" value="1500">
+    </div>
+
+    <div class="sb-label">Notes</div>
+    <div class="detail">
+      Bubble visual lifted from
+      <code>telefishin/components/tank/BubbleLayer.tsx</code>:
+      a vertical trail of staggered round bubbles rising from below the
+      visible area, fading at the top, removed after the animation ends.
+      The transport here is <code>BroadcastChannel('presence-ping')</code>;
+      in the source project it is a Supabase Realtime channel.
+      The lifecycle is the same.
+    </div>
+
+  </div>
+</div>
+
+
+<script>
+// ════════════════════════════════════════════════════════════════════
+// === Tab identity ===================================================
+// Each tab gets a sticky letter (A, B, C, ...) cached in sessionStorage.
+// Letters are not coordinated across tabs (so two tabs can both think
+// they are A on first open) — that's fine; the random uuid is what
+// uniquely identifies a peer on the channel. The letter is just for
+// human-readable display.
+// ════════════════════════════════════════════════════════════════════
+const ME = (sessionStorage.getItem('pp_me')) ||
+  (sessionStorage.setItem('pp_me', crypto.randomUUID()),
+   sessionStorage.getItem('pp_me'));
+
+function pickTabLetter() {
+  // Best-effort: count peers we already know about + 1, but for a fresh
+  // tab we just guess A. Real label resolves once the heartbeat hears
+  // back from peers (we'll re-letter ourselves to be the next
+  // unclaimed letter on the channel).
+  let cached = sessionStorage.getItem('pp_letter');
+  if (cached) return cached;
+  cached = 'A';
+  sessionStorage.setItem('pp_letter', cached);
+  return cached;
+}
+
+const state = {
+  letter:        pickTabLetter(),
+  peers:         new Map(),  // id -> { letter, lastSeen }
+  pingsSent:     0,
+  pingsRecv:     0,
+  posMode:       'random',
+  motif:         'bubble',
+  size:          22,
+  life:          2400,
+  color:         '#a4d3ee',
+  autoPing:      false,
+  autoInterval:  1500,
+};
+
+
+// ════════════════════════════════════════════════════════════════════
+// === Transport: BroadcastChannel ====================================
+// The two message kinds:
+//   { kind: 'ping',      id, x?, y?, motif, size, life, color, sender, letter, ts }
+//   { kind: 'heartbeat', sender, letter, ts }
+// Heartbeats are broadcast every 1.5s; peers with no heartbeat in 4s
+// are evicted from the peer map.
+// ════════════════════════════════════════════════════════════════════
+const ch = new BroadcastChannel('presence-ping');
+
+function send(msg) { ch.postMessage(msg); }
+
+ch.addEventListener('message', (e) => {
+  const m = e.data;
+  if (!m || m.sender === ME) return;        // ignore own echo
+  if (m.kind === 'heartbeat') {
+    state.peers.set(m.sender, { letter: m.letter, lastSeen: performance.now() });
+    rectifyLetter();
+  } else if (m.kind === 'ping') {
+    state.pingsRecv++;
+    spawnPing(m);
+    refreshReadout();
+  } else if (m.kind === 'who') {
+    // A new peer is asking who's here. Reply with a heartbeat.
+    sendHeartbeat();
+  }
+});
+
+function sendHeartbeat() {
+  send({ kind: 'heartbeat', sender: ME, letter: state.letter, ts: Date.now() });
+}
+
+function rectifyLetter() {
+  // Pick the lowest letter not already taken by a known peer.
+  const taken = new Set([...state.peers.values()].map(p => p.letter));
+  const ABC = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  // If our current letter is uncontested, keep it.
+  if (!taken.has(state.letter)) return;
+  for (const ch of ABC) {
+    if (!taken.has(ch)) {
+      state.letter = ch;
+      sessionStorage.setItem('pp_letter', ch);
+      tabPill.textContent = 'TAB ' + ch;
+      stageTag.textContent = 'VIEWPORT · TAB ' + ch + ' · click or send-ping';
+      sendHeartbeat();
+      return;
+    }
+  }
+}
+
+// Heartbeat tick + peer GC
+setInterval(() => {
+  sendHeartbeat();
+  const now = performance.now();
+  for (const [id, p] of state.peers) {
+    if (now - p.lastSeen > 4000) state.peers.delete(id);
+  }
+  peersPill.textContent = 'OTHER TABS: ' + state.peers.size;
+  refreshReadout();
+}, 1500);
+
+// Discovery: ask who's here on first load.
+send({ kind: 'who', sender: ME, ts: Date.now() });
+sendHeartbeat();
+
+
+// ════════════════════════════════════════════════════════════════════
+// === Visual: spawn + decay ==========================================
+// Lifted from telefishin/components/tank/BubbleLayer.tsx — vertical
+// bubble trail with staggered start times and per-trail removal timer.
+// Adapted to vanilla JS + CSS keyframes; the React/motion version
+// uses <AnimatePresence> + setTimeout for the same effect.
+// ════════════════════════════════════════════════════════════════════
+const stage    = document.getElementById('stage');
+const stageTag = document.getElementById('stageTag');
+const legend   = document.getElementById('legend');
+
+const BUBBLES_PER_TRAIL = 8;
+const STAGGER_MS        = 100;
+
+function spawnPing(msg) {
+  const motif = msg.motif || 'bubble';
+  const size  = msg.size  || 22;
+  const life  = msg.life  || 2400;
+  const color = msg.color || '#a4d3ee';
+
+  const rect = stage.getBoundingClientRect();
+  // Resolve position. Sender-chosen if x/y present; otherwise pick
+  // random per recipient.
+  let x = msg.x;
+  let y = msg.y;
+  if (x == null) x = randomInRange(rect.width  * 0.15, rect.width  * 0.85);
+  if (y == null) y = randomInRange(rect.height * 0.15, rect.height * 0.85);
+
+  if (motif === 'bubble') spawnBubbleTrail(x, size, life, color);
+  else if (motif === 'heart')   spawnHeartTrail(x, size, life, color);
+  else if (motif === 'ripple')  spawnRipple(x, y, size, life, color);
+  else if (motif === 'splash')  spawnSplash(x, y, size, life, color);
+}
+
+function randomInRange(a, b) { return a + Math.random() * (b - a); }
+
+// ─── Bubble trail (the BubbleLayer.tsx port) ───────────────
+function spawnBubbleTrail(x, baseSize, life, color) {
+  const trail = document.createElement('div');
+  trail.className = 'trail';
+  trail.style.left = x + 'px';
+  trail.style.setProperty('--life', life + 'ms');
+  trail.style.setProperty('--rise', stage.clientHeight + 120 + 'px');
+  stage.appendChild(trail);
+
+  let toRemove = BUBBLES_PER_TRAIL;
+  for (let i = 0; i < BUBBLES_PER_TRAIL; i++) {
+    const dot = document.createElement('div');
+    dot.className = 'bubble-dot';
+    const sz = baseSize - 6 + ((i * 5) % 14);
+    dot.style.width  = sz + 'px';
+    dot.style.height = sz + 'px';
+    dot.style.background = colorAlpha(color, 0.45);
+    dot.style.border = '1px solid ' + colorAlpha(color, 0.75);
+    dot.style.setProperty('--delay', (i * STAGGER_MS) + 'ms');
+    trail.appendChild(dot);
+
+    // animationend on the LAST bubble removes the whole trail.
+    dot.addEventListener('animationend', () => {
+      toRemove--;
+      if (toRemove <= 0) trail.remove();
+    }, { once: true });
+  }
+
+  // Belt-and-braces: also schedule a removal slightly after the
+  // last bubble would finish, so a backgrounded tab still cleans up.
+  const totalMs = life + (BUBBLES_PER_TRAIL - 1) * STAGGER_MS + 250;
+  setTimeout(() => trail.remove(), totalMs);
+}
+
+function spawnHeartTrail(x, baseSize, life, color) {
+  const trail = document.createElement('div');
+  trail.className = 'trail';
+  trail.style.left = x + 'px';
+  trail.style.setProperty('--life', life + 'ms');
+  trail.style.setProperty('--rise', stage.clientHeight + 120 + 'px');
+  stage.appendChild(trail);
+
+  const COUNT = 5;
+  let toRemove = COUNT;
+  for (let i = 0; i < COUNT; i++) {
+    const dot = document.createElement('div');
+    dot.className = 'heart-dot';
+    const sz = baseSize - 4 + ((i * 5) % 10);
+    dot.style.setProperty('--size', sz + 'px');
+    dot.style.setProperty('--accent-color', color);
+    dot.style.setProperty('--delay', (i * 140) + 'ms');
+    trail.appendChild(dot);
+    dot.addEventListener('animationend', () => {
+      toRemove--;
+      if (toRemove <= 0) trail.remove();
+    }, { once: true });
+  }
+  setTimeout(() => trail.remove(), life + COUNT * 140 + 250);
+}
+
+function spawnRipple(x, y, size, life, color) {
+  const r = document.createElement('div');
+  r.className = 'ripple';
+  r.style.left = x + 'px';
+  r.style.top  = y + 'px';
+  r.style.width  = (size * 2) + 'px';
+  r.style.height = (size * 2) + 'px';
+  r.style.setProperty('--life', life + 'ms');
+  r.style.setProperty('--accent-color', color);
+  stage.appendChild(r);
+  r.addEventListener('animationend', () => r.remove(), { once: true });
+  setTimeout(() => r.remove(), life + 250);
+}
+
+function spawnSplash(x, y, size, life, color) {
+  const COUNT = 9;
+  for (let i = 0; i < COUNT; i++) {
+    const ang = (i / COUNT) * Math.PI * 2 + Math.random() * 0.6;
+    const r   = 60 + Math.random() * 60;
+    const p = document.createElement('div');
+    p.className = 'splash-particle';
+    p.style.left = x + 'px';
+    p.style.top  = y + 'px';
+    p.style.setProperty('--size', (size * 0.55) + 'px');
+    p.style.setProperty('--life', life + 'ms');
+    p.style.setProperty('--accent-color', color);
+    p.style.setProperty('--dx', Math.cos(ang) * r + 'px');
+    p.style.setProperty('--dy', Math.sin(ang) * r * 0.6 + 'px');
+    stage.appendChild(p);
+    p.addEventListener('animationend', () => p.remove(), { once: true });
+    setTimeout(() => p.remove(), life + 250);
+  }
+}
+
+function colorAlpha(hex, a) {
+  // Turn #rrggbb into rgba(r,g,b,a). Tolerate short input.
+  const s = hex.replace('#', '');
+  const r = parseInt(s.length === 3 ? s[0]+s[0] : s.slice(0,2), 16);
+  const g = parseInt(s.length === 3 ? s[1]+s[1] : s.slice(2,4), 16);
+  const b = parseInt(s.length === 3 ? s[2]+s[2] : s.slice(4,6), 16);
+  return `rgba(${r},${g},${b},${a})`;
+}
+
+
+// ════════════════════════════════════════════════════════════════════
+// === Trigger paths: button, click-to-place, auto-ping ===============
+// In all three paths we (a) post on the channel and (b) echo locally.
+// Local-echo policy: render our own ping immediately so the sender
+// gets feedback without waiting for the round trip. This is what
+// telefishin's BubbleLayer does (`triggerBubbleAt` prop).
+// ════════════════════════════════════════════════════════════════════
+function emitPing(x, y) {
+  const msg = {
+    kind:   'ping',
+    id:     crypto.randomUUID(),
+    motif:  state.motif,
+    size:   state.size,
+    life:   state.life,
+    color:  state.color,
+    sender: ME,
+    letter: state.letter,
+    ts:     Date.now(),
+  };
+  if (x != null) { msg.x = x; msg.y = y; }
+  send(msg);
+  state.pingsSent++;
+  spawnPing(msg);            // local echo
+  refreshReadout();
+}
+
+const sendBtn  = document.getElementById('sendBtn');
+sendBtn.addEventListener('click', () => emitPing(null, null));
+
+stage.addEventListener('click', (e) => {
+  if (state.posMode !== 'click') return;
+  const r = stage.getBoundingClientRect();
+  emitPing(e.clientX - r.left, e.clientY - r.top);
+});
+
+// Auto-ping
+let autoTimer = null;
+function refreshAuto() {
+  if (autoTimer) { clearInterval(autoTimer); autoTimer = null; }
+  if (state.autoPing) {
+    autoTimer = setInterval(() => emitPing(null, null), state.autoInterval);
+  }
+}
+
+
+// ════════════════════════════════════════════════════════════════════
+// === UI wiring ======================================================
+// ════════════════════════════════════════════════════════════════════
+const tabPill   = document.getElementById('tabPill');
+const peersPill = document.getElementById('peersPill');
+const readoutEl = document.getElementById('readout');
+
+tabPill.textContent   = 'TAB ' + state.letter;
+peersPill.textContent = 'OTHER TABS: 0';
+stageTag.textContent  = 'VIEWPORT · TAB ' + state.letter + ' · click or send-ping';
+
+function bindRange(id, key, fmt) {
+  const el  = document.getElementById(id);
+  const lab = document.getElementById('v' + id[0].toUpperCase() + id.slice(1));
+  const update = () => {
+    state[key] = parseFloat(el.value);
+    if (lab) lab.textContent = fmt(state[key]);
+    if (id === 'autoInterval') refreshAuto();
+  };
+  el.addEventListener('input', update);
+  update();
+}
+bindRange('size',         'size',         v => v.toFixed(0) + ' px');
+bindRange('life',         'life',         v => v.toFixed(0) + ' ms');
+bindRange('autoInterval', 'autoInterval', v => v.toFixed(0) + ' ms');
+
+document.getElementById('color').addEventListener('input', e => {
+  state.color = e.target.value;
+  document.getElementById('vColor').textContent = state.color;
+});
+
+document.getElementById('motif').addEventListener('change', e => {
+  state.motif = e.target.value;
+});
+
+document.getElementById('autoPing').addEventListener('change', e => {
+  state.autoPing = e.target.checked;
+  refreshAuto();
+});
+
+// Position mode radios
+const posRandom = document.getElementById('posRandom');
+const posClick  = document.getElementById('posClick');
+function setPosMode(m) {
+  state.posMode = m;
+  posRandom.checked = (m === 'random');
+  posClick.checked  = (m === 'click');
+  document.querySelector('label[for="posRandom"]').classList.toggle('active', m === 'random');
+  document.querySelector('label[for="posClick"]').classList.toggle('active',  m === 'click');
+  stage.classList.toggle('click-mode',  m === 'click');
+  stage.classList.toggle('random-mode', m === 'random');
+  legend.textContent = m === 'click'
+    ? 'click to place ping · spatial coupling'
+    : 'random per recipient · loose coupling';
+}
+posRandom.addEventListener('change', () => setPosMode('random'));
+posClick .addEventListener('change', () => setPosMode('click'));
+setPosMode('random');
+
+
+// ════════════════════════════════════════════════════════════════════
+// === Readout (FPS + counters) =======================================
+// ════════════════════════════════════════════════════════════════════
+let last = performance.now(), fpsAvg = 60;
+function refreshReadout() {
+  readoutEl.innerHTML =
+    `TAB ${state.letter}` +
+    ` <span class="sep">·</span> PEERS ${state.peers.size}` +
+    ` <span class="sep">·</span> SENT ${state.pingsSent}` +
+    ` <span class="sep">·</span> RECV ${state.pingsRecv}` +
+    ` <span class="sep">·</span> ${fpsAvg.toFixed(0)} FPS`;
+}
+function fpsLoop() {
+  requestAnimationFrame(fpsLoop);
+  const now = performance.now();
+  const dt = (now - last) / 1000; last = now;
+  if (dt > 0) fpsAvg = fpsAvg * 0.92 + (1 / dt) * 0.08;
+}
+fpsLoop();
+setInterval(refreshReadout, 250);
+
+// On unload, drop our presence so peers stop counting us.
+addEventListener('beforeunload', () => {
+  send({ kind: 'heartbeat', sender: ME, letter: state.letter, ts: -1 });
+  ch.close();
+});
+</script>
+
+</body>
+</html>

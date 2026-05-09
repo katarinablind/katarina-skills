@@ -1,0 +1,1100 @@
+<!--
+  Operable Vehicle · Mesh & Animation — Studio
+  ============================================
+  Interactive demo for the operable-vehicle-mesh Claude skill.
+
+  Renders the actual car and kayak meshes from the source projects —
+  not low-poly stand-ins. The vehicle is a single THREE.Group whose
+  children are stashed by name on userData; sliders mutate the Group
+  each frame (wheel rotation, steering pivot yaw, paddle stroke phase,
+  damage scalar, body color). The MODE pill toggle swaps between CAR
+  and KAYAK by hiding one Group and revealing the other.
+
+  Mesh source attributions are in the code blocks below.
+  Self-contained — open via python3 -m http.server, or file://.
+  Tokens inlined from data-mapping/shared/tokens.css (see comment).
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Operable Vehicle · Mesh & Animation · Studio</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+<script type="importmap">
+{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.162.0/build/three.module.js"}}
+</script>
+
+<style>
+/* === Inlined from data-mapping/shared/tokens.css ============================ */
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap');
+
+:root {
+  --bg:            #0a0a0a;
+  --surface:       #ffffff;
+  --surface-muted: #f1f1ee;
+  --surface-dark:  #111214;
+  --border:        rgba(0, 0, 0, 0.06);
+  --border-dark:   rgba(255, 255, 255, 0.05);
+  --text:          #141414;
+  --text-muted:    rgba(20, 20, 20, 0.55);
+  --text-subtle:   rgba(20, 20, 20, 0.38);
+  --text-inverse:        #f4f2ec;
+  --text-inverse-muted:  rgba(244, 242, 236, 0.55);
+  --text-inverse-subtle: rgba(244, 242, 236, 0.45);
+  --accent:        #10b981;
+  --accent-bg:     rgba(16, 185, 129, 0.12);
+  --amber:         #f59e0b;
+  --blue:          #3b82f6;
+  --red:           #ef4444;
+  --radius:        clamp(18px, 2vw, 26px);
+  --radius-inner:  clamp(10px, 1.2vw, 16px);
+  --radius-pill:   999px;
+  --font: 'DM Sans', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-mono: 'DM Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --fs-hero:    clamp(28px, 3.5vw, 40px);
+  --fs-heading: 14px;
+  --fs-body:    12px;
+  --fs-small:   11px;
+  --fs-micro:   10px;
+  --fs-nano:    9px;
+  --fw-regular:  400;
+  --fw-medium:   500;
+  --fw-semibold: 600;
+  --fw-bold:     700;
+  --ease:     cubic-bezier(0.4, 0, 0.2, 1);
+  --dur-fast: 0.18s;
+  --dur-base: 0.28s;
+  --shadow: 0 1px 2px rgba(15, 18, 24, 0.04),
+            0 10px 28px rgba(15, 18, 24, 0.08);
+  --gutter: clamp(10px, 1.4vw, 18px);
+  --pad-y:  clamp(10px, 2vh, 24px);
+  --pad-x:  clamp(10px, 2vw, 24px);
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  -webkit-font-smoothing: antialiased;
+}
+/* === End inlined tokens.css ================================================ */
+
+
+/* ─── Studio layout (flex on body, direct parent of col-main + sidebar) ──── */
+body { height: 100vh; overflow: hidden; display: flex;
+  gap: var(--gutter); padding: var(--pad-y) var(--pad-x); }
+
+.col-main { flex: 1; display: flex; flex-direction: column;
+  gap: var(--gutter); min-width: 0; }
+
+.header { flex: 0 0 auto; display: flex; align-items: baseline;
+  justify-content: space-between; padding: 0 4px; gap: 12px; }
+.h-left { display: flex; align-items: baseline; gap: 12px; }
+.eyebrow {
+  font-family: var(--font-mono); font-size: var(--fs-nano);
+  font-weight: var(--fw-medium); letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--text-inverse);
+  background: rgba(244, 242, 236, 0.08); padding: 4px 10px;
+  border-radius: var(--radius-pill);
+  border: 1px solid rgba(244, 242, 236, 0.10);
+}
+.h-title { font-size: var(--fs-heading); font-weight: var(--fw-semibold);
+  color: var(--text-inverse-subtle); letter-spacing: -0.01em; }
+.h-byline { font-size: var(--fs-nano); color: var(--text-inverse-subtle);
+  font-weight: var(--fw-regular); letter-spacing: 0.06em;
+  text-transform: uppercase; opacity: 0.6; }
+
+.main-panel { flex: 1 1 0; min-height: 0; position: relative;
+  background: var(--surface-muted); border-radius: var(--radius);
+  border: 1px solid var(--border); box-shadow: var(--shadow);
+  overflow: hidden; display: flex; flex-direction: column; }
+
+.stage { flex: 1 1 0; min-height: 0; position: relative;
+  background: linear-gradient(160deg, #c4d4dd 0%, #9fb3c2 100%);
+  display: flex; align-items: stretch; justify-content: stretch;
+  overflow: hidden; }
+.stage canvas { display: block !important; width: 100% !important;
+  height: 100% !important; cursor: grab; }
+.stage canvas:active { cursor: grabbing; }
+
+.stage-tag { position: absolute; top: 14px; padding: 5px 12px;
+  font-size: var(--fs-nano); font-weight: var(--fw-semibold);
+  font-family: var(--font-mono); letter-spacing: 0.10em;
+  text-transform: uppercase; color: var(--text-inverse);
+  background: rgba(20, 20, 24, 0.55); backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: var(--radius-pill); z-index: 2; }
+.stage-tag.left  { left: 14px; }
+.stage-tag.right { right: 14px;
+  display: flex; align-items: center; gap: 6px; }
+.stage-tag .dot { width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+
+.legend { position: absolute; bottom: 14px; left: 14px;
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 12px; background: rgba(20,20,24,0.55);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: var(--radius-pill); z-index: 2;
+  font-family: var(--font-mono); font-size: var(--fs-nano);
+  color: var(--text-inverse-muted); letter-spacing: 0.08em;
+  text-transform: uppercase; }
+
+
+/* ─── Sidebar (dark) ─────────────────────────────── */
+.sidebar { width: 320px; min-width: 320px; display: flex;
+  flex-direction: column; gap: var(--gutter); }
+
+.sb-card { background: var(--surface-dark); border-radius: var(--radius);
+  border: 1px solid var(--border-dark); box-shadow: var(--shadow);
+  padding: 20px 22px; color: var(--text-inverse); }
+.sb-card.scrollable { flex: 1 1 0; min-height: 0; overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.08) transparent; }
+.sb-card.scrollable::-webkit-scrollbar { width: 3px; }
+.sb-card.scrollable::-webkit-scrollbar-track { background: transparent; }
+.sb-card.scrollable::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.08); border-radius: 2px; }
+
+.readout {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px; border-radius: var(--radius-pill);
+  background: rgba(244, 242, 236, 0.04);
+  border: 1px solid rgba(244, 242, 236, 0.08);
+  font-family: var(--font-mono); font-size: var(--fs-micro);
+  font-weight: var(--fw-medium); letter-spacing: 0.06em;
+  color: var(--text-inverse); text-transform: uppercase;
+  font-variant-numeric: tabular-nums;
+  margin-bottom: 22px;
+}
+.readout .dot { width: 7px; height: 7px; border-radius: 50%;
+  background: var(--accent); box-shadow: 0 0 10px var(--accent);
+  flex-shrink: 0; }
+.readout .stats { flex: 1; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.readout .sep { color: var(--text-inverse-subtle); margin: 0 4px; }
+
+.sb-label { font-size: var(--fs-nano); font-weight: var(--fw-semibold);
+  letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--text-inverse-subtle); margin-bottom: 14px; }
+.sb-label:not(:first-of-type) { margin-top: 22px; }
+
+.mode-toggle {
+  display: flex; gap: 4px; padding: 4px;
+  background: rgba(244,242,236,0.04);
+  border: 1px solid rgba(244,242,236,0.08);
+  border-radius: var(--radius-pill);
+  margin-bottom: 8px;
+}
+.mode-toggle button {
+  flex: 1; padding: 8px 0;
+  background: transparent; border: none;
+  color: var(--text-inverse-muted);
+  font-family: var(--font-mono); font-size: var(--fs-micro);
+  font-weight: var(--fw-semibold); letter-spacing: 0.16em;
+  text-transform: uppercase; border-radius: var(--radius-pill);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease),
+              color var(--dur-fast) var(--ease);
+}
+.mode-toggle button:hover { color: var(--text-inverse); }
+.mode-toggle button.active {
+  background: var(--accent); color: #062a1f;
+  box-shadow: 0 0 0 1px rgba(16,185,129,0.3),
+              0 4px 12px rgba(16,185,129,0.25);
+}
+
+.ctrl { margin-bottom: 16px; }
+.ctrl:last-child { margin-bottom: 0; }
+.ctrl-head { display: flex; align-items: baseline;
+  justify-content: space-between; margin-bottom: 6px; }
+.ctrl-name { font-size: var(--fs-small); font-weight: var(--fw-medium);
+  color: var(--text-inverse); letter-spacing: -0.01em; }
+.ctrl-val {
+  font-family: var(--font-mono); font-size: var(--fs-micro);
+  font-weight: var(--fw-medium); color: var(--accent);
+  font-variant-numeric: tabular-nums; letter-spacing: 0.02em;
+  min-width: 40px; text-align: right;
+}
+.ctrl-desc { font-size: var(--fs-nano); color: var(--text-inverse-subtle);
+  margin-top: 4px; line-height: 1.5; letter-spacing: 0.02em; }
+
+input[type="range"] {
+  -webkit-appearance: none; appearance: none;
+  width: 100%; height: 18px; background: transparent;
+  cursor: pointer; display: block;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 2px; background: rgba(244,242,236,0.10); border-radius: 2px;
+}
+input[type="range"]::-moz-range-track {
+  height: 2px; background: rgba(244,242,236,0.10); border-radius: 2px;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 12px; height: 12px; border-radius: 50%;
+  background: var(--accent); margin-top: -5px;
+  border: 2px solid var(--surface-dark);
+  box-shadow: 0 0 0 1px rgba(16,185,129,0.4);
+  transition: transform var(--dur-fast) var(--ease);
+}
+input[type="range"]::-moz-range-thumb {
+  width: 12px; height: 12px; border-radius: 50%;
+  background: var(--accent); border: 2px solid var(--surface-dark);
+  box-shadow: 0 0 0 1px rgba(16,185,129,0.4);
+  transition: transform var(--dur-fast) var(--ease);
+}
+input[type="range"]:hover::-webkit-slider-thumb { transform: scale(1.15); }
+input[type="range"]:hover::-moz-range-thumb { transform: scale(1.15); }
+
+select {
+  width: 100%; padding: 8px 10px;
+  background: rgba(244,242,236,0.04);
+  color: var(--text-inverse);
+  border: 1px solid rgba(244,242,236,0.10);
+  border-radius: var(--radius-inner);
+  font-family: var(--font-mono); font-size: var(--fs-micro);
+  letter-spacing: 0.04em; cursor: pointer;
+  -webkit-appearance: none; appearance: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' stroke='rgba(244,242,236,0.55)' stroke-width='1.4' fill='none'/></svg>");
+  background-repeat: no-repeat; background-position: right 12px center;
+  padding-right: 28px;
+}
+
+input[type="color"] {
+  width: 100%; height: 36px; padding: 2px;
+  background: rgba(244,242,236,0.04);
+  border: 1px solid rgba(244,242,236,0.10);
+  border-radius: var(--radius-inner);
+  cursor: pointer;
+}
+input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
+input[type="color"]::-webkit-color-swatch { border: none; border-radius: calc(var(--radius-inner) - 4px); }
+
+.checkbox-row {
+  display: flex; align-items: center; gap: 10px;
+  font-size: var(--fs-small); color: var(--text-inverse);
+  cursor: pointer; user-select: none;
+}
+.checkbox-row input[type="checkbox"] {
+  -webkit-appearance: none; appearance: none;
+  width: 14px; height: 14px;
+  border: 1px solid rgba(244,242,236,0.25);
+  border-radius: 3px; background: transparent;
+  cursor: pointer; position: relative;
+  transition: all var(--dur-fast) var(--ease);
+}
+.checkbox-row input[type="checkbox"]:checked {
+  background: var(--accent); border-color: var(--accent);
+}
+.checkbox-row input[type="checkbox"]:checked::after {
+  content: ''; position: absolute; left: 3px; top: 0;
+  width: 5px; height: 9px;
+  border: solid var(--surface-dark);
+  border-width: 0 2px 2px 0; transform: rotate(45deg);
+}
+
+.detail { font-size: var(--fs-nano); color: var(--text-inverse-muted);
+  line-height: 1.65; letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums; }
+.detail code {
+  font-family: var(--font-mono);
+  background: rgba(255,255,255,0.06); padding: 1px 5px;
+  border-radius: 3px; font-size: 9px; color: var(--text-inverse);
+}
+
+.car-only, .kayak-only { display: none; }
+body.is-car .car-only { display: block; }
+body.is-kayak .kayak-only { display: block; }
+</style>
+</head>
+<body class="is-car">
+
+<div class="col-main">
+  <div class="header">
+    <div class="h-left">
+      <span class="eyebrow">Studio · 05</span>
+      <span class="h-title">Operable Vehicle · Mesh &amp; Animation</span>
+    </div>
+    <div class="h-byline">Mesh-as-Group · input → animation · car↔kayak</div>
+  </div>
+
+  <div class="main-panel">
+    <div class="stage" id="stage">
+      <div class="stage-tag left" id="modeTag">CAR · Bronco · 4 wheels · steered</div>
+      <div class="stage-tag right"><span class="dot"></span>Drag to orbit · wheel zoom</div>
+      <div class="legend" id="legend">named userData children · idempotent damage</div>
+    </div>
+  </div>
+</div>
+
+<div class="sidebar">
+  <div class="sb-card scrollable">
+
+    <div class="readout">
+      <span class="dot"></span>
+      <span class="stats" id="readout">MODE car <span class="sep">·</span> TRIS 0 <span class="sep">·</span> 60 FPS</span>
+    </div>
+
+    <div class="sb-label">Mode</div>
+    <div class="mode-toggle">
+      <button id="modeCar" class="active" type="button">CAR</button>
+      <button id="modeKayak" type="button">KAYAK</button>
+    </div>
+
+    <div class="car-only">
+      <div class="sb-label">Car · Drivers</div>
+
+      <div class="ctrl">
+        <div class="ctrl-head">
+          <span class="ctrl-name">Speed</span>
+          <span class="ctrl-val" id="vSpeed">0.55</span>
+        </div>
+        <input type="range" id="speed" min="0" max="1" step="0.01" value="0.55">
+        <div class="ctrl-desc">Drives wheel rotation rate.</div>
+      </div>
+
+      <div class="ctrl">
+        <div class="ctrl-head">
+          <span class="ctrl-name">Steering</span>
+          <span class="ctrl-val" id="vSteer">+0.00</span>
+        </div>
+        <input type="range" id="steer" min="-1" max="1" step="0.01" value="0">
+        <div class="ctrl-desc">Front-wheel pivot · rotation.y.</div>
+      </div>
+
+      <div class="ctrl">
+        <div class="ctrl-head">
+          <span class="ctrl-name">Damage / Stability</span>
+          <span class="ctrl-val" id="vDamage">0.00</span>
+        </div>
+        <input type="range" id="damage" min="0" max="1" step="0.01" value="0">
+        <div class="ctrl-desc">0 pristine → 1 wrecked. <code>applyDamageVisuals(g, stability)</code> is idempotent.</div>
+      </div>
+
+      <div class="ctrl">
+        <div class="ctrl-head">
+          <span class="ctrl-name">Body color</span>
+          <span class="ctrl-val" id="vColor">#4a6a3a</span>
+        </div>
+        <input type="color" id="bodyColor" value="#4a6a3a">
+        <div class="ctrl-desc">Drives <code>bodyMat.color</code> + reseats <code>baseColor</code>.</div>
+      </div>
+    </div>
+
+    <div class="kayak-only">
+      <div class="sb-label">Kayak · Drivers</div>
+
+      <div class="ctrl">
+        <div class="ctrl-head">
+          <span class="ctrl-name">Paddle style</span>
+          <span class="ctrl-val" id="vPaddleStyle">touring</span>
+        </div>
+        <select id="paddleStyle">
+          <option value="basic">A · Basic</option>
+          <option value="touring" selected>B · Touring</option>
+          <option value="greenland">C · Greenland</option>
+          <option value="whitewater">D · Whitewater</option>
+        </select>
+        <div class="ctrl-desc">Swapping rebuilds just the paddle, not the kayak.</div>
+      </div>
+
+      <div class="ctrl">
+        <div class="ctrl-head">
+          <span class="ctrl-name">Stroke rate</span>
+          <span class="ctrl-val" id="vStroke">1.40</span>
+        </div>
+        <input type="range" id="stroke" min="0.5" max="3" step="0.01" value="1.4">
+        <div class="ctrl-desc">Hz · drives blade animation phase.</div>
+      </div>
+
+      <div class="ctrl">
+        <div class="ctrl-head">
+          <span class="ctrl-name">Paddle mode</span>
+          <span class="ctrl-val" id="vPaddleMode">opposite</span>
+        </div>
+        <select id="paddleMode">
+          <option value="sine">A · Sine</option>
+          <option value="hold-side">B · Hold-side</option>
+          <option value="alternating">C · Alternating</option>
+          <option value="opposite" selected>D · Opposite</option>
+        </select>
+        <div class="ctrl-desc" id="paddleDesc">Realistic — turn LEFT by paddling on the RIGHT.</div>
+      </div>
+
+      <div class="ctrl">
+        <div class="ctrl-head">
+          <span class="ctrl-name">Steering</span>
+          <span class="ctrl-val" id="vKSteer">+0.00</span>
+        </div>
+        <input type="range" id="kSteer" min="-1" max="1" step="0.01" value="0">
+        <div class="ctrl-desc">Maps to A/D in the paddle-mode functions.</div>
+      </div>
+
+      <div class="ctrl">
+        <div class="ctrl-head">
+          <span class="ctrl-name">Hull color</span>
+          <span class="ctrl-val" id="vHullColor">#d4601a</span>
+        </div>
+        <input type="color" id="hullColor" value="#d4601a">
+        <div class="ctrl-desc">Drives <code>hullMat.color</code>.</div>
+      </div>
+    </div>
+
+    <div class="sb-label">Camera</div>
+    <label class="checkbox-row">
+      <input type="checkbox" id="autoOrbit" checked>
+      Auto-orbit camera
+    </label>
+
+    <div class="sb-label">Notes</div>
+    <div class="detail">
+      Both vehicles are real meshes lifted from
+      <code>map-offroading/index.html</code> and
+      <code>kayak-studio.html</code>. Car has steered front-wheel pivot,
+      kayak has a swappable paddle group. Damage code mutates materials
+      via stashed refs in <code>userData</code>.
+    </div>
+
+  </div>
+</div>
+
+
+<script type="module">
+import * as THREE from 'three';
+
+// ─── Studio state ────────────────────────────────────────────
+const params = {
+  mode: 'car',
+  speed: 0.55, steer: 0, damage: 0,
+  bodyColor: '#4a6a3a',
+  paddleStyle: 'touring',
+  stroke: 1.4,
+  paddleMode: 'opposite',
+  kSteer: 0,
+  hullColor: '#d4601a',
+  autoOrbit: true,
+};
+
+
+// ─── Three.js scene + lighting ───────────────────────────────
+const stageEl = document.getElementById('stage');
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(2, devicePixelRatio));
+const { width: W0, height: H0 } = stageEl.getBoundingClientRect();
+renderer.setSize(W0, H0);
+stageEl.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(0xb8c8d4, 22, 55);
+
+const camera = new THREE.PerspectiveCamera(38, W0 / H0, 0.5, 200);
+camera.position.set(0, 5, 11);
+
+// Lighting: same setup as kayak-studio.html lines ~178-181
+scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+const sun = new THREE.DirectionalLight(0xfff4d8, 1.10);
+sun.position.set(8, 14, 6);
+scene.add(sun);
+scene.add(new THREE.HemisphereLight(0x99bbdd, 0x556633, 0.45));
+
+
+// ─── Stage discs (small ground / water) ──────────────────────
+const groundMat = new THREE.MeshStandardMaterial({
+  color: 0x9ba268, roughness: 0.92, flatShading: true
+});
+const groundDisc = new THREE.Mesh(new THREE.CircleGeometry(7, 64), groundMat);
+groundDisc.rotation.x = -Math.PI/2; scene.add(groundDisc);
+
+// Water disc with subtle wave noise displacement
+function makeWaterDisc() {
+  const geo = new THREE.CircleGeometry(7, 96);
+  const pos = geo.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), y = pos.getY(i);
+    const w = Math.sin(x * 0.9) * 0.04 + Math.cos(y * 1.1) * 0.04
+            + Math.sin((x + y) * 0.5) * 0.025;
+    pos.setZ(i, w);
+  }
+  geo.computeVertexNormals();
+  const mat = new THREE.MeshStandardMaterial({
+    color: 0x3e6a82, roughness: 0.32, metalness: 0.22, flatShading: true
+  });
+  const m = new THREE.Mesh(geo, mat);
+  m.rotation.x = -Math.PI/2;
+  m.visible = false;
+  return m;
+}
+const waterDisc = makeWaterDisc();
+scene.add(waterDisc);
+
+
+// ════════════════════════════════════════════════════════════════════
+// === buildCarMesh + applyDamageVisuals: lifted from
+// === experiments/map-offroading/index.html (lines ~1400-1612).
+// === Bronco-style off-roader: body, hood, cab, windshield, spare
+// === tire with rim/spokes, 4 wheels with addRim() helper, front
+// === steering pivot, bumpers, fender flares, running boards, grill,
+// === side+rear windows, door seams, taillights, headlights, mirrors,
+// === roof rack, fog lights, plate, kayak-on-roof, paddle alongside,
+// === radial soft ground shadow.
+// ════════════════════════════════════════════════════════════════════
+function buildCarMesh(color){
+  const g=new THREE.Group();
+  const bodyCol=color!==undefined?color:0x4a6a3a;
+  const m=new THREE.MeshStandardMaterial({color:bodyCol,roughness:.6,metalness:.15,flatShading:true});
+  g.userData={bodyMat:m,baseColor:new THREE.Color(bodyCol).clone(),allMats:[m]};
+  const body=new THREE.Mesh(new THREE.BoxGeometry(3.0,1.4,4.0),m);body.position.y=1.6;g.add(body);
+  const hoodMat=new THREE.MeshStandardMaterial({color:0x557a45,roughness:.55,flatShading:true});
+  g.userData.allMats.push(hoodMat);
+  const hood=new THREE.Mesh(new THREE.BoxGeometry(3.0,.15,1.4),hoodMat);hood.position.set(0,2.38,-1.3);g.add(hood);
+  const cab=new THREE.Mesh(new THREE.BoxGeometry(2.6,.8,2.2),m);cab.position.set(0,2.7,.4);g.add(cab);
+  const wsMat=new THREE.MeshStandardMaterial({color:0x1a1a2a,roughness:.1,metalness:.4,transparent:true,opacity:.7});
+  const ws=new THREE.Mesh(new THREE.BoxGeometry(2.4,.9,.08),wsMat);ws.position.set(0,2.75,-.7);ws.rotation.x=-.26;g.add(ws);
+  const rearMat=new THREE.MeshStandardMaterial({color:0x3a5a2a,roughness:.7,flatShading:true});
+  const rear=new THREE.Mesh(new THREE.BoxGeometry(2.8,1.2,.08),rearMat);rear.position.set(0,1.8,2.0);g.add(rear);
+  const wm=new THREE.MeshStandardMaterial({color:0x222222,roughness:.85});
+  const rimMat=new THREE.MeshStandardMaterial({color:0x888888,metalness:.7,roughness:.2});
+  const hubMat=new THREE.MeshStandardMaterial({color:0x666666,metalness:.5,roughness:.3});
+  const spare=new THREE.Mesh(new THREE.CylinderGeometry(.6,.6,.2,14),wm);spare.position.set(0,1.6,2.12);spare.rotation.x=Math.PI/2;g.add(spare);
+  const spRim=new THREE.Mesh(new THREE.TorusGeometry(.42,.05,6,14),rimMat);spRim.position.set(0,1.6,2.22);g.add(spRim);
+  const spHub=new THREE.Mesh(new THREE.CylinderGeometry(.12,.12,.06,8),hubMat);spHub.position.set(0,1.6,2.23);spHub.rotation.x=Math.PI/2;g.add(spHub);
+  for(let si=0;si<5;si++){
+    const ang=si*Math.PI*2/5;
+    const spoke=new THREE.Mesh(new THREE.BoxGeometry(.04,.04,.35),rimMat);
+    spoke.position.set(Math.cos(ang)*.21,1.6+Math.sin(ang)*.21,2.22);
+    spoke.rotation.z=ang;g.add(spoke);
+  }
+  function addRim(parent,x,y,z,side){
+    const outX=side>0?x+.22:x-.22;
+    const rimRing=new THREE.Mesh(new THREE.TorusGeometry(.52,.06,6,14),rimMat);
+    rimRing.position.set(outX,y,z);rimRing.rotation.y=Math.PI/2;parent.add(rimRing);
+    const hub=new THREE.Mesh(new THREE.CylinderGeometry(.15,.15,.06,8),hubMat);
+    hub.position.set(outX,y,z);hub.rotation.z=Math.PI/2;parent.add(hub);
+    for(let si=0;si<5;si++){
+      const ang=si*Math.PI*2/5;
+      const spoke=new THREE.Mesh(new THREE.BoxGeometry(.06,.04,.42),rimMat);
+      spoke.position.set(outX,y+Math.sin(ang)*.26,z+Math.cos(ang)*.26);
+      spoke.rotation.x=ang;parent.add(spoke);
+    }
+  }
+  const wheels=[];
+  [[-1.7,.75,1.2],[1.7,.75,1.2]].forEach(([x,y,z])=>{
+    const w=new THREE.Mesh(new THREE.CylinderGeometry(.75,.75,.45,14),wm);w.position.set(x,y,z);w.rotation.z=Math.PI/2;g.add(w);
+    addRim(g,x,y,z,x>0?1:-1);
+    wheels.push(w);
+  });
+  const frontWheelPivot=new THREE.Group();frontWheelPivot.position.set(0,0,-1.2);g.add(frontWheelPivot);
+  [[-1.7,.75,0],[1.7,.75,0]].forEach(([x,y,z])=>{
+    const w=new THREE.Mesh(new THREE.CylinderGeometry(.75,.75,.45,14),wm);w.position.set(x,y,z);w.rotation.z=Math.PI/2;frontWheelPivot.add(w);
+    addRim(frontWheelPivot,x,y,z,x>0?1:-1);
+    wheels.push(w);
+  });
+  g.userData.frontWheelPivot=frontWheelPivot;
+  g.userData.wheels=wheels;
+  const bm=new THREE.MeshStandardMaterial({color:0x333333,roughness:.8});
+  const frontBump=new THREE.Mesh(new THREE.BoxGeometry(3.2,.3,.15),bm);frontBump.position.set(0,.8,-2.05);g.add(frontBump);
+  const rearBump=new THREE.Mesh(new THREE.BoxGeometry(3.2,.25,.12),bm);rearBump.position.set(0,.8,2.05);g.add(rearBump);
+  const fenderMat=new THREE.MeshStandardMaterial({color:0x333333,roughness:.85,flatShading:true});
+  for(const [x,z] of[[-1.65,1.2],[1.65,1.2],[-1.65,-1.2],[1.65,-1.2]]){
+    const fender=new THREE.Mesh(new THREE.BoxGeometry(.25,.4,1.2),fenderMat);
+    fender.position.set(x,1.35,z);g.add(fender);
+  }
+  for(const sx of[-1.5,1.5]){
+    const step=new THREE.Mesh(new THREE.BoxGeometry(.2,.08,2.8),fenderMat);
+    step.position.set(sx,.85,0);g.add(step);
+  }
+  const grillMat=new THREE.MeshStandardMaterial({color:0x222222,roughness:.7,metalness:.3});
+  for(let gy=0;gy<4;gy++){
+    const slat=new THREE.Mesh(new THREE.BoxGeometry(2.4,.06,.06),grillMat);
+    slat.position.set(0,1.15+gy*.18,-2.04);g.add(slat);
+  }
+  const swMat=new THREE.MeshStandardMaterial({color:0x1a1a2a,roughness:.1,metalness:.4,transparent:true,opacity:.5});
+  for(const sx of[-1.32,1.32]){
+    const sw=new THREE.Mesh(new THREE.BoxGeometry(.06,.55,1.4),swMat);
+    sw.position.set(sx,2.6,.4);g.add(sw);
+  }
+  const rw=new THREE.Mesh(new THREE.BoxGeometry(2.2,.5,.06),swMat);
+  rw.position.set(0,2.65,1.5);rw.rotation.x=.15;g.add(rw);
+  const seamMat=new THREE.MeshStandardMaterial({color:0x2a4a1a,roughness:.9});
+  for(const sx of[-1.52,1.52]){
+    const seam=new THREE.Mesh(new THREE.BoxGeometry(.02,.9,.04),seamMat);
+    seam.position.set(sx,1.65,0);g.add(seam);
+  }
+  const tl=new THREE.MeshStandardMaterial({color:0xdd2200,emissive:0xcc1100,emissiveIntensity:.5});
+  [[-1.15,1.75,2.02],[1.15,1.75,2.02]].forEach(([x,y,z])=>{g.add(new THREE.Mesh(new THREE.BoxGeometry(.4,.25,.05),tl)).position.set(x,y,z)});
+  const hl=new THREE.MeshStandardMaterial({color:0xffffdd,emissive:0xffffaa,emissiveIntensity:.5});
+  [[-0.9,1.35,-2.02],[.9,1.35,-2.02]].forEach(([x,y,z])=>{
+    const h2=new THREE.Mesh(new THREE.CircleGeometry(.22,10),hl);h2.position.set(x,y,z);h2.rotation.y=Math.PI;g.add(h2);
+    const housing=new THREE.Mesh(new THREE.CylinderGeometry(.25,.25,.08,10),fenderMat);
+    housing.position.set(x,y,z+.02);housing.rotation.x=Math.PI/2;g.add(housing);
+  });
+  const mirrorMat=new THREE.MeshStandardMaterial({color:bodyCol,roughness:.6,flatShading:true});
+  const mirrorGlass=new THREE.MeshStandardMaterial({color:0x1a1a2a,roughness:.05,metalness:.5});
+  for(const sx of[-1.65,1.65]){
+    const arm=new THREE.Mesh(new THREE.BoxGeometry(.45,.05,.1),fenderMat);arm.position.set(sx+(sx>0?.15:-.15),2.15,-.85);g.add(arm);
+    const housing=new THREE.Mesh(new THREE.BoxGeometry(.3,.25,.12),mirrorMat);
+    housing.position.set(sx+(sx>0?.25:-.25),2.15,-.88);g.add(housing);
+    const mirror=new THREE.Mesh(new THREE.BoxGeometry(.24,.2,.04),mirrorGlass);
+    mirror.position.set(sx+(sx>0?.28:-.28),2.15,-.92);g.add(mirror);
+  }
+  const rrm=new THREE.MeshStandardMaterial({color:0x333333,roughness:.7,metalness:.3});
+  for(let i=-1;i<=1;i++){const b=new THREE.Mesh(new THREE.BoxGeometry(2.4,.04,.06),rrm);b.position.set(0,3.14,.4+i*.6);g.add(b)}
+  for(const sx of[-1,1]){const b=new THREE.Mesh(new THREE.BoxGeometry(.06,.04,1.4),rrm);b.position.set(sx*1.1,3.14,.4);g.add(b)}
+  for(const sx of[-1.1,1.1]){for(const sz of[-.2,.4,1.0]){
+    const post=new THREE.Mesh(new THREE.BoxGeometry(.04,.12,.04),rrm);post.position.set(sx,3.08,sz);g.add(post);
+  }}
+  const fogLightMat=new THREE.MeshStandardMaterial({color:0xffffcc,emissive:0xffff88,emissiveIntensity:.2});
+  for(const fx of[-.55,.55]){
+    const fl=new THREE.Mesh(new THREE.CircleGeometry(.1,8),fogLightMat);fl.position.set(fx,.92,-2.06);fl.rotation.y=Math.PI;g.add(fl);
+  }
+  const plateMat=new THREE.MeshStandardMaterial({color:0xddddcc,roughness:.5});
+  const plate=new THREE.Mesh(new THREE.BoxGeometry(.6,.25,.02),plateMat);plate.position.set(0,1.2,2.06);g.add(plate);
+  // Soft radial ground shadow under car (canvas texture)
+  const shCanvas=document.createElement('canvas');shCanvas.width=64;shCanvas.height=64;
+  const shCtx2=shCanvas.getContext('2d');
+  const grad=shCtx2.createRadialGradient(32,32,0,32,32,32);
+  grad.addColorStop(0,'rgba(0,0,0,0.45)');
+  grad.addColorStop(.5,'rgba(0,0,0,0.25)');
+  grad.addColorStop(.8,'rgba(0,0,0,0.08)');
+  grad.addColorStop(1,'rgba(0,0,0,0)');
+  shCtx2.fillStyle=grad;shCtx2.fillRect(0,0,64,64);
+  const shadowTex=new THREE.CanvasTexture(shCanvas);
+  const shadowGeo=new THREE.PlaneGeometry(5.5,7.0);
+  shadowGeo.rotateX(-Math.PI/2);
+  const shadowMat=new THREE.MeshBasicMaterial({map:shadowTex,transparent:true,opacity:.6,depthWrite:false});
+  const shadow=new THREE.Mesh(shadowGeo,shadowMat);
+  shadow.position.set(0,.05,0); shadow.renderOrder=-1;
+  g.add(shadow);
+  g.userData.shadow=shadow;
+  g.userData.hood=hood; g.userData.roof=cab;
+  g.userData.frontBump=frontBump; g.userData.rearBump=rearBump;
+  return g;
+}
+
+// Stability-based car appearance (dirt/wear as stability drops).
+function applyDamageVisuals(g,stability){
+  const d=Math.max(0,1-stability/100); // 0=pristine, 1=wrecked
+  const ud=g.userData;if(!ud.bodyMat)return;
+  const c2=ud.baseColor.clone().lerp(new THREE.Color(0x3a2a15),d*.4);
+  ud.bodyMat.color.copy(c2);ud.bodyMat.roughness=.6+d*.3;
+  for(const mat of ud.allMats){if(mat!==ud.bodyMat)mat.roughness=Math.min(.95,.6+d*.3)}
+}
+
+
+// ════════════════════════════════════════════════════════════════════
+// === buildKayakMesh + paddle/cockpit builders: lifted from
+// === experiments/map-offroading/kayak-studio.html (lines ~205-460).
+// === Hull is an extruded bezier shape, deck line + cockpit rim,
+// === grab handles, and a swappable paddle child group. Four paddle
+// === styles (basic/touring/greenland/whitewater) and the round
+// === cockpit are included; outer code can rebuild the paddle without
+// === touching the kayak.
+// ════════════════════════════════════════════════════════════════════
+function buildKayakMesh(){
+  const g=new THREE.Group();
+  const hullMat=new THREE.MeshStandardMaterial({color:0xd4601a,roughness:.45,metalness:.05});
+  const deckMat=new THREE.MeshStandardMaterial({color:0xb8500e,roughness:.5});
+  const handleMat=new THREE.MeshStandardMaterial({color:0x222222,roughness:.8});
+
+  const kL=4.4,kW=.85;
+  const shape=new THREE.Shape();
+  shape.moveTo(0,-kL/2);
+  shape.bezierCurveTo( kW,-kL*.3,  kW, kL*.3, 0, kL/2);
+  shape.bezierCurveTo(-kW, kL*.3, -kW,-kL*.3, 0,-kL/2);
+  const hullGeo=new THREE.ExtrudeGeometry(shape,{depth:.28,bevelEnabled:true,bevelThickness:.07,bevelSize:.05,bevelSegments:3});
+  const hull=new THREE.Mesh(hullGeo,hullMat);
+  hull.rotation.x=Math.PI/2;hull.position.y=0.05;g.add(hull);
+
+  const deckLine=new THREE.Mesh(new THREE.BoxGeometry(.06,.04,3.8),deckMat);
+  deckLine.position.set(0,0.42,0);g.add(deckLine);
+
+  const cockpit=buildCockpitRound();
+  cockpit.position.set(0,0.42,0.3);g.add(cockpit);
+  g.userData.cockpit=cockpit;
+
+  for(const z of [-kL*.46,kL*.46]){
+    const h=new THREE.Mesh(new THREE.TorusGeometry(.07,.018,4,8,Math.PI),handleMat);
+    h.position.set(0,0.43,z);h.rotation.x=-Math.PI/2;g.add(h);
+  }
+
+  const paddlePivot=buildPaddle('touring');
+  paddlePivot.position.set(0,0.72,0.3);g.add(paddlePivot);
+  g.userData.paddlePivot=paddlePivot;
+  g.userData.hullMat=hullMat;
+  return g;
+}
+
+const shaftCol=0x4a2008, bladeCol=0x5B2F08;
+
+function bladeFromShape(shape,depth=0.014,bevel=false){
+  const opts={depth,bevelEnabled:bevel};
+  if(bevel)Object.assign(opts,{bevelThickness:0.004,bevelSize:0.006,bevelSegments:2});
+  const geo=new THREE.ExtrudeGeometry(shape,opts);
+  geo.translate(0,0,-depth/2);
+  return geo;
+}
+
+function buildPaddleBasic(){
+  const pivot=new THREE.Group();
+  const shaftM=new THREE.MeshStandardMaterial({color:shaftCol,roughness:.7});
+  const bladeM=new THREE.MeshStandardMaterial({color:bladeCol,roughness:.55});
+  const shaft=new THREE.Mesh(new THREE.CylinderGeometry(.035,.035,3.2,8),shaftM);
+  shaft.rotation.z=Math.PI/2;pivot.add(shaft);
+  for(const sign of [-1,1]){
+    const blade=new THREE.Mesh(new THREE.BoxGeometry(.1,.04,.45),bladeM);
+    blade.position.set(sign*1.6,0,0);pivot.add(blade);
+  }
+  return pivot;
+}
+
+function buildPaddleTouring(){
+  const pivot=new THREE.Group();
+  const shaftM=new THREE.MeshStandardMaterial({color:shaftCol,roughness:.7});
+  const bladeM=new THREE.MeshStandardMaterial({color:0x704028,roughness:.55});
+  const shaft=new THREE.Mesh(new THREE.CylinderGeometry(.028,.028,3.4,8),shaftM);
+  shaft.rotation.z=Math.PI/2;pivot.add(shaft);
+  const s=new THREE.Shape();
+  s.moveTo(0,-0.04);
+  s.bezierCurveTo(0.15,-0.12, 0.42,-0.13, 0.55,-0.02);
+  s.bezierCurveTo(0.55, 0.02, 0.48, 0.10, 0.32, 0.13);
+  s.bezierCurveTo(0.18, 0.12, 0.05, 0.08, 0, 0.04);
+  s.closePath();
+  const bladeGeo=bladeFromShape(s,0.014);
+  const right=new THREE.Mesh(bladeGeo,bladeM);
+  right.position.set(1.70,0,0);pivot.add(right);
+  const left=new THREE.Mesh(bladeGeo,bladeM);
+  left.position.set(-1.70,0,0);left.scale.x=-1;pivot.add(left);
+  return pivot;
+}
+
+function buildPaddleGreenland(){
+  const pivot=new THREE.Group();
+  const shaftM=new THREE.MeshStandardMaterial({color:0x3a1808,roughness:.75});
+  const bladeM=new THREE.MeshStandardMaterial({color:0x543018,roughness:.6});
+  const shaft=new THREE.Mesh(new THREE.CylinderGeometry(.023,.023,3.6,8),shaftM);
+  shaft.rotation.z=Math.PI/2;pivot.add(shaft);
+  const s=new THREE.Shape();
+  s.moveTo(0,-0.025);
+  s.bezierCurveTo(0.25,-0.045, 0.50,-0.045, 0.70,-0.010);
+  s.bezierCurveTo(0.50, 0.045, 0.25, 0.045, 0,   0.025);
+  s.closePath();
+  const bladeGeo=bladeFromShape(s,0.016);
+  const right=new THREE.Mesh(bladeGeo,bladeM);
+  right.position.set(1.80,0,0);pivot.add(right);
+  const left=new THREE.Mesh(bladeGeo,bladeM);
+  left.position.set(-1.80,0,0);left.scale.x=-1;pivot.add(left);
+  return pivot;
+}
+
+function buildPaddleWhitewater(){
+  const pivot=new THREE.Group();
+  const shaftM=new THREE.MeshStandardMaterial({color:0x1a1a20,roughness:.5,metalness:.25});
+  const bladeM=new THREE.MeshStandardMaterial({color:0xc84620,roughness:.45});
+  const shaft=new THREE.Mesh(new THREE.CylinderGeometry(.040,.040,3.0,8),shaftM);
+  shaft.rotation.z=Math.PI/2;pivot.add(shaft);
+  const s=new THREE.Shape();
+  s.moveTo(0,-0.11);
+  s.lineTo(0.20,-0.15);
+  s.lineTo(0.42,-0.13);
+  s.bezierCurveTo(0.52,-0.05, 0.52, 0.05, 0.42, 0.13);
+  s.lineTo(0.20, 0.15);
+  s.lineTo(0,    0.11);
+  s.closePath();
+  const bladeGeo=bladeFromShape(s,0.022,true);
+  const right=new THREE.Mesh(bladeGeo,bladeM);
+  right.position.set(1.50,0,0);pivot.add(right);
+  const left=new THREE.Mesh(bladeGeo,bladeM);
+  left.position.set(-1.50,0,0);left.scale.x=-1;pivot.add(left);
+  return pivot;
+}
+
+const paddleBuilders={
+  basic:buildPaddleBasic,
+  touring:buildPaddleTouring,
+  greenland:buildPaddleGreenland,
+  whitewater:buildPaddleWhitewater,
+};
+function buildPaddle(style){
+  return (paddleBuilders[style]||buildPaddleTouring)();
+}
+
+const rimM=new THREE.MeshStandardMaterial({color:0x1a0c04,roughness:.85});
+const darkM=new THREE.MeshStandardMaterial({color:0x0a0604,roughness:.95});
+function buildCockpitRound(){
+  const outer=new THREE.Shape();
+  outer.absellipse(0,0,0.28,0.28,0,Math.PI*2,false);
+  const inner=new THREE.Shape();
+  inner.absellipse(0,0,0.24,0.24,0,Math.PI*2,true);
+  outer.holes.push(inner);
+  const rimGeo=new THREE.ExtrudeGeometry(outer,{depth:0.035,bevelEnabled:false});
+  rimGeo.rotateX(Math.PI/2);
+  const rim=new THREE.Mesh(rimGeo,rimM);
+  const holeGeo=new THREE.ShapeGeometry(inner);
+  holeGeo.rotateX(Math.PI/2);
+  const hole=new THREE.Mesh(holeGeo,darkM);
+  hole.position.y=-0.002;
+  const g=new THREE.Group();
+  g.add(rim);g.add(hole);
+  return g;
+}
+// ════════════════════════════════════════════════════════════════════
+
+
+// ─── Build car + kayak as siblings; toggle visibility ────────
+const carGroup = buildCarMesh(0x4a6a3a);
+scene.add(carGroup);
+
+const kayakGroup = buildKayakMesh();
+// Kayak hull sits at y=0; lift slightly so it floats above water bob.
+kayakGroup.position.y = 0.18;
+kayakGroup.visible = false;
+scene.add(kayakGroup);
+
+
+// ─── Animation state ─────────────────────────────────────────
+const animState = {
+  wheelRot: 0,
+  paddlePhase: 0,
+  paddleRot: 0,
+};
+
+// Paddle modes — same shape as the four functions in kayak-studio.
+// Translates the steering slider into "A held" / "D held" decisions
+// so the existing dispatch keeps its semantics.
+const SWAY = 0.65, STROKE_MUL = 5.5;
+function fakeKey() {
+  return {
+    a: params.kSteer < -0.3,
+    d: params.kSteer >  0.3,
+    w: true, // stroke rate slider always feeds forward motion
+  };
+}
+
+const paddleModes = {
+  sine() {
+    return Math.sin(animState.paddlePhase * STROKE_MUL) * SWAY;
+  },
+  'hold-side'() {
+    const k = fakeKey();
+    if (k.a) return +SWAY;
+    if (k.d) return -SWAY;
+    if (k.w) return Math.sin(animState.paddlePhase * STROKE_MUL) * SWAY;
+    return Math.sin(animState.paddlePhase * 1.2) * SWAY * 0.18;
+  },
+  alternating() {
+    const k = fakeKey();
+    if (k.a) return +SWAY;
+    if (k.d) return -SWAY;
+    if (k.w) return Math.sin(animState.paddlePhase * STROKE_MUL) * SWAY;
+    return 0;
+  },
+  opposite() {
+    const k = fakeKey();
+    if (k.a) return -SWAY;
+    if (k.d) return +SWAY;
+    if (k.w) return Math.sin(animState.paddlePhase * STROKE_MUL) * SWAY;
+    return 0;
+  },
+};
+
+
+// ─── Camera: orbit + drag + wheel zoom ───────────────────────
+let camYaw = 0.55, camPitch = 0.40, camDist = 9.0;
+let dragging = false, dragX = 0, dragY = 0;
+renderer.domElement.addEventListener('pointerdown', e => {
+  dragging = true; dragX = e.clientX; dragY = e.clientY;
+  renderer.domElement.setPointerCapture(e.pointerId);
+});
+renderer.domElement.addEventListener('pointermove', e => {
+  if (!dragging) return;
+  camYaw   -= (e.clientX - dragX) * 0.008;
+  camPitch  = Math.max(0.10, Math.min(1.20, camPitch - (e.clientY - dragY) * 0.005));
+  dragX = e.clientX; dragY = e.clientY;
+});
+renderer.domElement.addEventListener('pointerup',     () => { dragging = false; });
+renderer.domElement.addEventListener('pointercancel', () => { dragging = false; });
+renderer.domElement.addEventListener('wheel', e => {
+  e.preventDefault();
+  camDist = Math.max(4, Math.min(14, camDist + e.deltaY * 0.01));
+}, { passive: false });
+
+
+// ─── UI wiring ───────────────────────────────────────────────
+function bindSlider(id, key, fmt) {
+  const el = document.getElementById(id);
+  const lab = document.getElementById('v' + id[0].toUpperCase() + id.slice(1));
+  const update = () => {
+    params[key] = parseFloat(el.value);
+    lab.textContent = fmt(params[key]);
+  };
+  el.addEventListener('input', update);
+  update();
+}
+bindSlider('speed',  'speed',  v => v.toFixed(2));
+bindSlider('steer',  'steer',  v => (v >= 0 ? '+' : '') + v.toFixed(2));
+bindSlider('damage', 'damage', v => v.toFixed(2));
+bindSlider('stroke', 'stroke', v => v.toFixed(2));
+bindSlider('kSteer', 'kSteer', v => (v >= 0 ? '+' : '') + v.toFixed(2));
+
+// Mode toggle
+const modeCarBtn   = document.getElementById('modeCar');
+const modeKayakBtn = document.getElementById('modeKayak');
+const modeTag      = document.getElementById('modeTag');
+function setMode(m) {
+  params.mode = m;
+  document.body.classList.toggle('is-car',   m === 'car');
+  document.body.classList.toggle('is-kayak', m === 'kayak');
+  modeCarBtn.classList.toggle('active',   m === 'car');
+  modeKayakBtn.classList.toggle('active', m === 'kayak');
+  groundDisc.visible = m === 'car';
+  waterDisc.visible  = m === 'kayak';
+  carGroup.visible   = m === 'car';
+  kayakGroup.visible = m === 'kayak';
+  modeTag.textContent = m === 'car'
+    ? 'CAR · Bronco · 4 wheels · steered'
+    : 'KAYAK · paddle · float-and-rock';
+}
+modeCarBtn.addEventListener('click',   () => setMode('car'));
+modeKayakBtn.addEventListener('click', () => setMode('kayak'));
+
+// Body color (car)
+const bodyColorEl = document.getElementById('bodyColor');
+const vColorEl    = document.getElementById('vColor');
+bodyColorEl.addEventListener('input', () => {
+  params.bodyColor = bodyColorEl.value;
+  vColorEl.textContent = params.bodyColor;
+  const c = new THREE.Color(params.bodyColor);
+  carGroup.userData.bodyMat.color.copy(c);
+  carGroup.userData.baseColor.copy(c);
+});
+
+// Hull color (kayak)
+const hullColorEl = document.getElementById('hullColor');
+const vHullColor  = document.getElementById('vHullColor');
+hullColorEl.addEventListener('input', () => {
+  params.hullColor = hullColorEl.value;
+  vHullColor.textContent = params.hullColor;
+  kayakGroup.userData.hullMat.color.copy(new THREE.Color(params.hullColor));
+});
+
+// Paddle style — rebuild just the paddle child
+const paddleStyleEl = document.getElementById('paddleStyle');
+const vPaddleStyle  = document.getElementById('vPaddleStyle');
+paddleStyleEl.addEventListener('change', () => {
+  params.paddleStyle = paddleStyleEl.value;
+  vPaddleStyle.textContent = params.paddleStyle;
+  const old = kayakGroup.userData.paddlePivot;
+  if (old) {
+    kayakGroup.remove(old);
+    old.traverse(o => { if (o.geometry) o.geometry.dispose(); });
+  }
+  const next = buildPaddle(params.paddleStyle);
+  next.position.set(0, 0.72, 0.3);
+  next.rotation.z = animState.paddleRot;
+  kayakGroup.add(next);
+  kayakGroup.userData.paddlePivot = next;
+});
+
+// Paddle mode
+const paddleModeEl  = document.getElementById('paddleMode');
+const vPaddleMode   = document.getElementById('vPaddleMode');
+const paddleDescEl  = document.getElementById('paddleDesc');
+const paddleDescriptions = {
+  sine: 'Continuous oscillation — always alive, doesn\'t reflect input.',
+  'hold-side': 'Arcade-readable — paddle plants on the held key\'s side.',
+  alternating: 'Like hold-side but a clean idle pose with no input.',
+  opposite: 'Realistic — turn LEFT by paddling on the RIGHT.',
+};
+paddleModeEl.addEventListener('change', () => {
+  params.paddleMode = paddleModeEl.value;
+  vPaddleMode.textContent = params.paddleMode;
+  paddleDescEl.textContent = paddleDescriptions[params.paddleMode];
+});
+
+const autoOrbitEl = document.getElementById('autoOrbit');
+autoOrbitEl.addEventListener('change', () => { params.autoOrbit = autoOrbitEl.checked; });
+
+const readoutEl = document.getElementById('readout');
+
+
+// ─── Frame loop ──────────────────────────────────────────────
+let last = performance.now(), lastReadout = 0, fpsAvg = 60;
+function frame() {
+  requestAnimationFrame(frame);
+  const now = performance.now();
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  const t = now / 1000;
+
+  if (params.autoOrbit && !dragging) camYaw += dt * 0.18;
+
+  if (params.mode === 'car') {
+    // Wheel spin from speed (rad/s scaled by slider)
+    animState.wheelRot += params.speed * 8 * dt;
+    for (const w of carGroup.userData.wheels) w.rotation.x = animState.wheelRot;
+    // Front pivot yaw from steering
+    carGroup.userData.frontWheelPivot.rotation.y = params.steer * 0.45;
+    // Damage — applyDamageVisuals takes stability 0..100, slider is 0..1 damage
+    applyDamageVisuals(carGroup, (1 - params.damage) * 100);
+    // Carry steering color into mirror housing? No — keep behavior to spec.
+    carGroup.position.y = 0;
+  } else {
+    // Float-and-rock surface contact
+    kayakGroup.position.y = 0.18 + Math.sin(t * 1.7) * 0.05 + Math.sin(t * 0.6) * 0.025;
+    kayakGroup.rotation.x = Math.sin(t * 1.5) * 0.04;
+    kayakGroup.rotation.z = -params.kSteer * 0.18 + Math.sin(t * 2.3) * 0.02;
+    // Paddle stroke phase advances at slider Hz
+    animState.paddlePhase += dt * params.stroke;
+    const target = paddleModes[params.paddleMode]();
+    animState.paddleRot += (target - animState.paddleRot) * Math.min(1, dt * 16);
+    if (kayakGroup.userData.paddlePivot)
+      kayakGroup.userData.paddlePivot.rotation.z = animState.paddleRot;
+  }
+
+  // Camera orbit around vehicle origin
+  const cy = Math.cos(camPitch), sy = Math.sin(camPitch);
+  const lookY = params.mode === 'car' ? 1.6 : 0.4;
+  camera.position.set(
+    Math.sin(camYaw) * camDist * cy,
+    lookY + sy * camDist,
+    Math.cos(camYaw) * camDist * cy
+  );
+  camera.lookAt(0, lookY, 0);
+
+  renderer.render(scene, camera);
+
+  if (now - lastReadout > 160) {
+    lastReadout = now;
+    fpsAvg = fpsAvg * 0.9 + (1 / Math.max(0.001, dt)) * 0.1;
+    const tris = renderer.info.render.triangles;
+    readoutEl.innerHTML =
+      `MODE ${params.mode}` +
+      ` <span class="sep">·</span> TRIS ${tris}` +
+      ` <span class="sep">·</span> ${fpsAvg.toFixed(0)} FPS`;
+  }
+}
+frame();
+
+
+// ─── Resize ──────────────────────────────────────────────────
+addEventListener('resize', () => {
+  const { width, height } = stageEl.getBoundingClientRect();
+  renderer.setSize(width, height);
+  camera.aspect = width / height;
+  camera.updateProjectionMatrix();
+});
+
+setMode('car');
+</script>
+
+</body>
+</html>

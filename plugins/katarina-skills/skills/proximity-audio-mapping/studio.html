@@ -1,0 +1,680 @@
+<!--
+  Proximity Audio Studio — Katarina Blind
+  =======================================
+  Visual demo for the proximity-audio-mapping skill: a 2D scene of zones
+  whose loudness is driven by cursor distance. Per-frame proximity scalars
+  feed setTargetAtTime on each zone's GainNode; a shared BiquadFilter is
+  modulated by depth; one-shot pings ride above the bed.
+
+  Self-contained: tokens.css inlined, AudioEngine inline, no build step.
+  Open in any modern browser; click Start Audio to unlock the AudioContext.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Proximity Audio Studio · Spatial Mixing</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap">
+<style>
+  /* === Inlined from data-mapping/shared/tokens.css === */
+  @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap');
+
+  :root {
+    /* Surfaces */
+    --bg:            #0a0a0a;
+    --surface:       #ffffff;
+    --surface-muted: #f1f1ee;
+    --surface-dark:  #111214;
+    --border:        rgba(0, 0, 0, 0.06);
+    --border-dark:   rgba(255, 255, 255, 0.05);
+
+    /* Text on light */
+    --text:          #141414;
+    --text-muted:    rgba(20, 20, 20, 0.55);
+    --text-subtle:   rgba(20, 20, 20, 0.38);
+
+    /* Text on dark */
+    --text-inverse:        #f4f2ec;
+    --text-inverse-muted:  rgba(244, 242, 236, 0.55);
+    --text-inverse-subtle: rgba(244, 242, 236, 0.45);
+
+    /* Accents */
+    --accent:        #10b981;
+    --accent-bg:     rgba(16, 185, 129, 0.12);
+    --amber:         #f59e0b;
+    --blue:          #3b82f6;
+    --red:           #ef4444;
+    --purple:        #8b5cf6;
+    --cyan:          #06b6d4;
+
+    /* Radii */
+    --radius:        clamp(18px, 2vw, 26px);
+    --radius-inner:  clamp(10px, 1.2vw, 16px);
+    --radius-pill:   999px;
+
+    /* Type */
+    --font: 'DM Sans', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    --font-mono: 'DM Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+    --fs-hero:    clamp(28px, 3.5vw, 40px);
+    --fs-heading: 14px;
+    --fs-body:    12px;
+    --fs-small:   11px;
+    --fs-micro:   10px;
+    --fs-nano:    9px;
+
+    --fw-regular:  400;
+    --fw-medium:   500;
+    --fw-semibold: 600;
+    --fw-bold:     700;
+
+    /* Motion */
+    --ease:     cubic-bezier(0.4, 0, 0.2, 1);
+    --dur-fast: 0.18s;
+    --dur-base: 0.28s;
+
+    /* Elevation */
+    --shadow: 0 1px 2px rgba(15, 18, 24, 0.04),
+              0 10px 28px rgba(15, 18, 24, 0.08);
+
+    /* Outer spacing */
+    --gutter: clamp(10px, 1.4vw, 18px);
+    --pad-y:  clamp(10px, 2vh, 24px);
+    --pad-x:  clamp(10px, 2vw, 24px);
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font);
+    -webkit-font-smoothing: antialiased;
+  }
+  /* === End inlined tokens === */
+
+  body { height: 100vh; overflow: hidden; display: flex;
+    gap: var(--gutter); padding: var(--pad-y) var(--pad-x); }
+
+  /* ── Main column (light) ─────────────────────────────── */
+  .col-main { flex: 1; display: flex; flex-direction: column;
+    gap: var(--gutter); min-width: 0; }
+  .header { flex: 0 0 auto; display: flex; align-items: baseline;
+    justify-content: space-between; padding: 0 4px; }
+  .h-left { display: flex; align-items: center; gap: 12px; }
+  .h-eyebrow { font-family: var(--font-mono); font-size: var(--fs-nano);
+    font-weight: var(--fw-medium); letter-spacing: 0.14em;
+    color: var(--accent); background: var(--accent-bg);
+    padding: 4px 10px; border-radius: var(--radius-pill);
+    text-transform: uppercase; }
+  .h-title { font-size: var(--fs-heading); font-weight: var(--fw-semibold);
+    color: var(--text-inverse-subtle); letter-spacing: -0.01em; }
+  .h-byline { font-size: var(--fs-nano); color: var(--text-inverse-subtle);
+    font-weight: var(--fw-regular); letter-spacing: 0.06em;
+    text-transform: uppercase; opacity: 0.6; }
+
+  .main-panel { flex: 1 1 0; min-height: 0; position: relative;
+    background: var(--surface-muted); border-radius: var(--radius);
+    border: 1px solid var(--border); box-shadow: var(--shadow);
+    overflow: hidden; display: flex; flex-direction: column; }
+
+  .stage { flex: 1 1 0; min-height: 0; position: relative;
+    overflow: hidden; cursor: crosshair; }
+  .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%;
+    display: block; }
+
+  .stage-hint { position: absolute; top: 14px; left: 14px;
+    padding: 5px 13px; font-size: var(--fs-micro); font-weight: var(--fw-medium);
+    letter-spacing: 0.04em; color: var(--text-muted);
+    background: rgba(255,255,255,0.7); backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px); border-radius: var(--radius-pill);
+    text-transform: uppercase; pointer-events: none;
+    transition: opacity var(--dur-base) var(--ease); }
+  .stage-hint.dim { opacity: 0.35; }
+
+  .stage-coords { position: absolute; bottom: 14px; right: 14px;
+    padding: 5px 11px; font-family: var(--font-mono); font-size: var(--fs-nano);
+    color: var(--text-muted); background: rgba(255,255,255,0.7);
+    backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+    border-radius: var(--radius-pill); pointer-events: none;
+    letter-spacing: 0.02em; }
+
+  /* Footer strip beneath stage */
+  .stage-footer { flex: 0 0 auto; padding: 14px 20px;
+    display: flex; align-items: center; justify-content: space-between;
+    border-top: 1px solid var(--border); gap: 18px; }
+  .stage-footer .group { display: flex; flex-direction: column; gap: 2px; }
+  .stage-footer .grp-label { font-size: var(--fs-nano);
+    color: var(--text-subtle); letter-spacing: 0.12em;
+    text-transform: uppercase; font-weight: var(--fw-semibold); }
+  .stage-footer .grp-val { font-family: var(--font-mono);
+    font-size: var(--fs-body); color: var(--text);
+    font-weight: var(--fw-medium); letter-spacing: -0.01em; }
+  .stage-footer .grp-val .accent { color: var(--accent); }
+
+  /* ── Sidebar (dark) ──────────────────────────────────── */
+  .sidebar { width: 340px; min-width: 340px; display: flex;
+    flex-direction: column; gap: var(--gutter); }
+  .sb-card { background: var(--surface-dark); border-radius: var(--radius);
+    border: 1px solid var(--border-dark); box-shadow: var(--shadow);
+    padding: 18px 20px; color: var(--text-inverse); }
+
+  .sb-label { font-size: var(--fs-nano); font-weight: var(--fw-semibold);
+    letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--text-inverse-subtle); margin-bottom: 12px; }
+  .sb-label:not(:first-child) { margin-top: 22px; }
+
+  /* Live readout at top */
+  .readout { font-family: var(--font-mono); font-size: var(--fs-small);
+    color: var(--text-inverse); font-weight: var(--fw-regular);
+    line-height: 1.7; letter-spacing: 0.01em;
+    padding: 10px 12px; border-radius: var(--radius-inner);
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.05); }
+  .readout .sep { color: var(--text-inverse-subtle); margin: 0 8px; }
+  .readout .key { color: var(--text-inverse-subtle); margin-right: 4px; }
+  .readout .v { color: var(--text-inverse); }
+  .readout.live .v { color: var(--accent); }
+
+  /* Sliders */
+  .ctrl { margin-bottom: 16px; }
+  .ctrl:last-child { margin-bottom: 0; }
+  .ctrl-head { display: flex; align-items: baseline;
+    justify-content: space-between; margin-bottom: 6px; }
+  .ctrl-name { font-size: var(--fs-small); color: var(--text-inverse);
+    font-weight: var(--fw-medium); letter-spacing: -0.01em; }
+  .ctrl-val { font-family: var(--font-mono); font-size: var(--fs-small);
+    color: var(--accent); font-weight: var(--fw-medium);
+    letter-spacing: 0.02em; font-variant-numeric: tabular-nums; }
+  .ctrl-sub { font-family: var(--font-mono); font-size: var(--fs-nano);
+    color: var(--text-inverse-subtle); margin-top: 4px;
+    font-variant-numeric: tabular-nums; letter-spacing: 0.02em; }
+  input[type=range] { width: 100%; accent-color: var(--accent);
+    height: 4px; cursor: pointer; background: transparent; }
+
+  /* Buttons */
+  .actions { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
+  .btn { width: 100%; padding: 10px; border-radius: var(--radius-pill);
+    background: transparent; color: var(--text-inverse);
+    border: 1px solid rgba(255,255,255,0.10);
+    font-family: var(--font); font-size: var(--fs-small);
+    font-weight: var(--fw-semibold); cursor: pointer;
+    transition: all var(--dur-fast) var(--ease);
+    letter-spacing: -0.005em; }
+  .btn:hover { background: rgba(255,255,255,0.05);
+    border-color: rgba(255,255,255,0.18); }
+  .btn:active { transform: translateY(1px); }
+  .btn.primary { background: var(--accent-bg);
+    border-color: rgba(16,185,129,0.28); color: var(--accent); }
+  .btn.primary:hover { background: rgba(16,185,129,0.20); }
+
+  .live-pill { display: flex; align-items: center; justify-content: center;
+    gap: 8px; padding: 10px; border-radius: var(--radius-pill);
+    background: var(--accent-bg);
+    border: 1px solid rgba(16,185,129,0.28);
+    color: var(--accent); font-family: var(--font-mono);
+    font-size: var(--fs-small); font-weight: var(--fw-medium);
+    letter-spacing: 0.14em; text-transform: uppercase; }
+  .live-pill .dot { width: 7px; height: 7px; border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 0 rgba(16,185,129,0.6);
+    animation: pulse 1.6s infinite var(--ease); }
+  @keyframes pulse {
+    0%   { box-shadow: 0 0 0 0 rgba(16,185,129,0.5); }
+    70%  { box-shadow: 0 0 0 8px rgba(16,185,129,0); }
+    100% { box-shadow: 0 0 0 0 rgba(16,185,129,0); }
+  }
+
+  .note { font-size: var(--fs-micro); color: var(--text-inverse-subtle);
+    line-height: 1.6; margin-top: 12px; }
+  .note code { font-family: var(--font-mono); font-size: 10px;
+    background: rgba(255,255,255,0.06); padding: 1px 5px;
+    border-radius: 3px; letter-spacing: -0.02em; }
+</style>
+</head>
+<body>
+
+<div class="col-main">
+  <div class="header">
+    <div class="h-left">
+      <div class="h-eyebrow">Studio 02</div>
+      <div class="h-title">Proximity Audio · Spatial Mixing</div>
+    </div>
+    <div class="h-byline">Katarina Blind · Web Audio</div>
+  </div>
+
+  <div class="main-panel">
+    <div class="stage" id="stage">
+      <canvas id="scene"></canvas>
+      <div class="stage-hint" id="stageHint">Move cursor over zones</div>
+      <div class="stage-coords" id="coords">x — · y —</div>
+    </div>
+    <div class="stage-footer">
+      <div class="group">
+        <div class="grp-label">Engine</div>
+        <div class="grp-val" id="engineState">idle</div>
+      </div>
+      <div class="group">
+        <div class="grp-label">Sum gain</div>
+        <div class="grp-val"><span id="sumGain" class="accent">0.000</span></div>
+      </div>
+      <div class="group">
+        <div class="grp-label">Filter</div>
+        <div class="grp-val" id="filterState">—</div>
+      </div>
+      <div class="group">
+        <div class="grp-label">Pings fired</div>
+        <div class="grp-val" id="pingCount">0</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="sidebar">
+  <div class="sb-card">
+    <div class="sb-label">Live Readout</div>
+    <div class="readout" id="readout">
+      <span class="key">ZONES</span><span class="v" id="rZones">5</span>
+      <span class="sep">·</span>
+      <span class="key">CTX</span><span class="v" id="rCtx">— Hz</span>
+      <span class="sep">·</span>
+      <span class="key">LATENCY</span><span class="v" id="rLat">— ms</span>
+    </div>
+
+    <div class="sb-label">Controls</div>
+
+    <div class="ctrl">
+      <div class="ctrl-head">
+        <div class="ctrl-name">Zone radius</div>
+        <div class="ctrl-val" id="vRadius">0.30</div>
+      </div>
+      <input type="range" id="slRadius" min="0.10" max="0.60" step="0.01" value="0.30">
+      <div class="ctrl-sub">falloff distance · fraction of canvas width</div>
+    </div>
+
+    <div class="ctrl">
+      <div class="ctrl-head">
+        <div class="ctrl-name">Depth</div>
+        <div class="ctrl-val" id="vDepth">0.40</div>
+      </div>
+      <input type="range" id="slDepth" min="0" max="1" step="0.01" value="0.40">
+      <div class="ctrl-sub">filter cutoff · <span id="vFreq">1520 Hz</span></div>
+    </div>
+
+    <div class="ctrl">
+      <div class="ctrl-head">
+        <div class="ctrl-name">Smoothing τ</div>
+        <div class="ctrl-val" id="vTau">0.05 s</div>
+      </div>
+      <input type="range" id="slTau" min="0.01" max="0.50" step="0.01" value="0.05">
+      <div class="ctrl-sub">setTargetAtTime time-constant</div>
+    </div>
+
+    <div class="sb-label">Audio</div>
+    <div class="actions">
+      <button class="btn primary" id="btnStart">Start Audio</button>
+      <button class="btn" id="btnPing">Trigger Ping (at cursor)</button>
+    </div>
+
+    <div class="note">
+      Each zone is a sine osc → gain → shared <code>BiquadFilter</code>.
+      Per frame: <code>gain.setTargetAtTime(prox^1.5 · 0.4)</code>. Pings
+      use <code>exponentialRampToValueAtTime</code> with a 0.001 floor.
+    </div>
+  </div>
+</div>
+
+<script>
+  // ─── AudioEngine ────────────────────────────────────────────────
+  // Singleton: one AudioContext, one shared BiquadFilter, one GainNode
+  // per zone. updateZones() consumes a {id: 0..1} map.
+  class AudioEngine {
+    constructor() {
+      this.ctx = null;
+      this.filter = null;
+      this.zones = {};
+      this.lastPing = {};
+      this.tau = 0.05;
+    }
+
+    async start() {
+      if (this.ctx) return;
+      const Ctor = window.AudioContext || window.webkitAudioContext;
+      this.ctx = new Ctor();
+      if (this.ctx.state === 'suspended') await this.ctx.resume();
+
+      this.filter = this.ctx.createBiquadFilter();
+      this.filter.type = 'lowpass';
+      this.filter.frequency.value = 1520;
+      this.filter.Q.value = 0.7;
+
+      // a small master so the bed never clips when many zones overlap
+      this.master = this.ctx.createGain();
+      this.master.gain.value = 0.85;
+
+      this.filter.connect(this.master).connect(this.ctx.destination);
+    }
+
+    addZone(id, freq) {
+      if (!this.ctx) return;
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      gain.gain.value = 0;
+      osc.connect(gain).connect(this.filter);
+      osc.start();
+      this.zones[id] = { osc, gain, freq, lastTarget: 0 };
+    }
+
+    updateZones(proxMap) {
+      if (!this.ctx) return;
+      const t = this.ctx.currentTime;
+      for (const [id, z] of Object.entries(this.zones)) {
+        const p = Math.max(0, Math.min(1, proxMap[id] ?? 0));
+        // soft curve, 0.32 cap so 5 zones can co-exist without clipping
+        const target = Math.pow(p, 1.5) * 0.32;
+        z.gain.gain.setTargetAtTime(target, t, this.tau);
+        z.lastTarget = target;
+      }
+    }
+
+    modulateFilter(depth) {
+      if (!this.filter) return;
+      const freq = 80 + (1 - depth) * 2400;
+      this.filter.frequency.setTargetAtTime(freq, this.ctx.currentTime, 0.10);
+      return freq;
+    }
+
+    setSmoothing(tau) { this.tau = tau; }
+
+    ping(freq = 880, dur = 0.45) {
+      if (!this.ctx) return;
+      const key = `f${Math.round(freq)}`;
+      const now = Date.now();
+      if (this.lastPing[key] && now - this.lastPing[key] < 120) return false;
+      this.lastPing[key] = now;
+
+      const osc = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      // ride above the bed but still through the filter for tonal cohesion
+      osc.connect(g).connect(this.filter);
+      const t = this.ctx.currentTime;
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.55, t + 0.01);   // attack
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);  // decay (non-zero)
+      osc.start(t);
+      osc.stop(t + dur + 0.05);
+      osc.onended = () => { osc.disconnect(); g.disconnect(); };
+      return true;
+    }
+  }
+
+  // ─── Scene definition ───────────────────────────────────────────
+  // Fixed normalized positions (0..1 of canvas), labels & freqs.
+  const ZONES = [
+    { id: 'bass',  name: 'BASS',  freq: 110, x: 0.22, y: 0.30 },
+    { id: 'pad',   name: 'PAD',   freq: 220, x: 0.74, y: 0.22 },
+    { id: 'mid',   name: 'MID',   freq: 330, x: 0.50, y: 0.52 },
+    { id: 'air',   name: 'AIR',   freq: 440, x: 0.20, y: 0.78 },
+    { id: 'bell',  name: 'BELL',  freq: 660, x: 0.80, y: 0.74 },
+  ];
+
+  // ─── State ──────────────────────────────────────────────────────
+  const engine = new AudioEngine();
+  let started = false;
+  let radiusFrac = 0.30;
+  let depth = 0.40;
+  let tau = 0.05;
+  let cursor = { x: -9999, y: -9999, inside: false };
+  let proxMap = {};
+  let smoothedGain = {};   // for visual halos (independent visual smoothing)
+  let pingCount = 0;
+  let dpr = window.devicePixelRatio || 1;
+
+  // ─── DOM refs ───────────────────────────────────────────────────
+  const stage = document.getElementById('stage');
+  const canvas = document.getElementById('scene');
+  const ctx2d = canvas.getContext('2d');
+  const stageHint = document.getElementById('stageHint');
+  const coordsEl = document.getElementById('coords');
+  const engineStateEl = document.getElementById('engineState');
+  const sumGainEl = document.getElementById('sumGain');
+  const filterStateEl = document.getElementById('filterState');
+  const pingCountEl = document.getElementById('pingCount');
+  const rZones = document.getElementById('rZones');
+  const rCtx = document.getElementById('rCtx');
+  const rLat = document.getElementById('rLat');
+  const readoutEl = document.getElementById('readout');
+  const slRadius = document.getElementById('slRadius');
+  const slDepth  = document.getElementById('slDepth');
+  const slTau    = document.getElementById('slTau');
+  const vRadius  = document.getElementById('vRadius');
+  const vDepth   = document.getElementById('vDepth');
+  const vTau     = document.getElementById('vTau');
+  const vFreq    = document.getElementById('vFreq');
+  const btnStart = document.getElementById('btnStart');
+  const btnPing  = document.getElementById('btnPing');
+
+  // ─── Canvas sizing ──────────────────────────────────────────────
+  function resize() {
+    const rect = stage.getBoundingClientRect();
+    dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.max(1, Math.round(rect.width * dpr));
+    canvas.height = Math.max(1, Math.round(rect.height * dpr));
+    ctx2d.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  window.addEventListener('resize', resize);
+
+  // ─── Cursor → proximity per frame ───────────────────────────────
+  stage.addEventListener('pointermove', (e) => {
+    const rect = stage.getBoundingClientRect();
+    cursor.x = e.clientX - rect.left;
+    cursor.y = e.clientY - rect.top;
+    cursor.inside = true;
+    coordsEl.textContent =
+      `x ${cursor.x.toFixed(0).padStart(4)}  ·  y ${cursor.y.toFixed(0).padStart(4)}`;
+    if (started) stageHint.classList.add('dim');
+  });
+  stage.addEventListener('pointerleave', () => {
+    cursor.inside = false;
+  });
+  stage.addEventListener('pointerdown', (e) => {
+    if (!started) return;
+    // click-to-ping at cursor (also reachable via the sidebar button)
+    triggerPingAtCursor();
+  });
+
+  // ─── Sliders ────────────────────────────────────────────────────
+  slRadius.addEventListener('input', () => {
+    radiusFrac = parseFloat(slRadius.value);
+    vRadius.textContent = radiusFrac.toFixed(2);
+  });
+  slDepth.addEventListener('input', () => {
+    depth = parseFloat(slDepth.value);
+    vDepth.textContent = depth.toFixed(2);
+    const f = 80 + (1 - depth) * 2400;
+    vFreq.textContent = `${Math.round(f)} Hz`;
+    if (started) {
+      engine.modulateFilter(depth);
+      filterStateEl.textContent = `${Math.round(f)} Hz LP`;
+    }
+  });
+  slTau.addEventListener('input', () => {
+    tau = parseFloat(slTau.value);
+    vTau.textContent = `${tau.toFixed(2)} s`;
+    engine.setSmoothing(tau);
+  });
+
+  // ─── Start button ───────────────────────────────────────────────
+  btnStart.addEventListener('click', async () => {
+    if (started) return;
+    await engine.start();
+    ZONES.forEach(z => engine.addZone(z.id, z.freq));
+    engine.modulateFilter(depth);
+    engine.setSmoothing(tau);
+    started = true;
+
+    // swap button → live pill
+    const pill = document.createElement('div');
+    pill.className = 'live-pill';
+    pill.innerHTML = '<span class="dot"></span> LIVE';
+    btnStart.replaceWith(pill);
+
+    // populate live readout
+    readoutEl.classList.add('live');
+    rZones.textContent = String(ZONES.length);
+    rCtx.textContent = `${engine.ctx.sampleRate} Hz`;
+    const lat = (engine.ctx.baseLatency ?? 0) * 1000;
+    rLat.textContent = `${lat.toFixed(1)} ms`;
+
+    engineStateEl.textContent = `running · ${engine.ctx.state}`;
+    const f = 80 + (1 - depth) * 2400;
+    filterStateEl.textContent = `${Math.round(f)} Hz LP`;
+  });
+
+  // ─── Ping ───────────────────────────────────────────────────────
+  function triggerPingAtCursor() {
+    if (!started) return;
+    // pick a frequency biased by cursor x (left = low, right = high)
+    const rect = stage.getBoundingClientRect();
+    const xn = cursor.inside ? cursor.x / rect.width : 0.5;
+    const yn = cursor.inside ? cursor.y / rect.height : 0.5;
+    // 220 → 1320 Hz across x; bend up slightly with y for a "tap" feel
+    const f = 220 + xn * 1100 + (1 - yn) * 220;
+    if (engine.ping(f, 0.42)) {
+      pingCount++;
+      pingCountEl.textContent = String(pingCount);
+    }
+  }
+  btnPing.addEventListener('click', triggerPingAtCursor);
+
+  // ─── Render loop ────────────────────────────────────────────────
+  function frame() {
+    const w = canvas.clientWidth;
+    const h = canvas.clientHeight;
+    if (canvas.width !== Math.round(w * dpr) ||
+        canvas.height !== Math.round(h * dpr)) resize();
+
+    const radius = radiusFrac * w;
+
+    // 1. compute proximity per zone from cursor
+    proxMap = {};
+    let sumTarget = 0;
+    for (const z of ZONES) {
+      const zx = z.x * w, zy = z.y * h;
+      let p = 0;
+      if (cursor.inside) {
+        const dx = cursor.x - zx, dy = cursor.y - zy;
+        const d = Math.hypot(dx, dy);
+        p = Math.max(0, 1 - d / radius);
+      }
+      proxMap[z.id] = p;
+      sumTarget += Math.pow(p, 1.5) * 0.32;
+
+      // independent visual one-pole smoothing so halos track audio feel
+      const prev = smoothedGain[z.id] ?? 0;
+      const target = Math.pow(p, 1.5) * 0.32;
+      const k = 1 - Math.exp(-1 / (60 * Math.max(tau, 0.01)));
+      smoothedGain[z.id] = prev + (target - prev) * k;
+    }
+
+    // 2. push to engine
+    if (started) engine.updateZones(proxMap);
+
+    // 3. clear + paint
+    ctx2d.clearRect(0, 0, w, h);
+
+    // background grid (subtle dot grid)
+    ctx2d.fillStyle = 'rgba(20,20,20,0.06)';
+    const step = 32;
+    for (let gx = step / 2; gx < w; gx += step) {
+      for (let gy = step / 2; gy < h; gy += step) {
+        ctx2d.beginPath();
+        ctx2d.arc(gx, gy, 0.7, 0, Math.PI * 2);
+        ctx2d.fill();
+      }
+    }
+
+    // cursor radius ring (shows current falloff)
+    if (cursor.inside) {
+      ctx2d.strokeStyle = 'rgba(20,20,20,0.10)';
+      ctx2d.lineWidth = 1;
+      ctx2d.setLineDash([3, 5]);
+      ctx2d.beginPath();
+      ctx2d.arc(cursor.x, cursor.y, radius, 0, Math.PI * 2);
+      ctx2d.stroke();
+      ctx2d.setLineDash([]);
+    }
+
+    // 4. draw zones
+    const baseR = Math.max(22, w * 0.038);
+    for (const z of ZONES) {
+      const zx = z.x * w, zy = z.y * h;
+      const g = smoothedGain[z.id] ?? 0;
+      const haloR = baseR * (1 + (g / 0.32) * 1.5);
+
+      // halo
+      const haloAlpha = 0.10 + (g / 0.32) * 0.22;
+      ctx2d.fillStyle = `rgba(16,185,129,${haloAlpha.toFixed(3)})`;
+      ctx2d.beginPath();
+      ctx2d.arc(zx, zy, haloR, 0, Math.PI * 2);
+      ctx2d.fill();
+
+      // outer faint halo for depth
+      ctx2d.fillStyle = `rgba(16,185,129,${(haloAlpha * 0.4).toFixed(3)})`;
+      ctx2d.beginPath();
+      ctx2d.arc(zx, zy, haloR * 1.5, 0, Math.PI * 2);
+      ctx2d.fill();
+
+      // core circle
+      const isLive = g > 0.001;
+      ctx2d.fillStyle = isLive ? '#10b981' : '#1c1c1a';
+      ctx2d.beginPath();
+      ctx2d.arc(zx, zy, baseR * 0.34, 0, Math.PI * 2);
+      ctx2d.fill();
+
+      // labels
+      const labelY = zy + baseR + 18;
+      ctx2d.textAlign = 'center';
+      ctx2d.fillStyle = '#141414';
+      ctx2d.font = '600 11px "DM Sans", system-ui, sans-serif';
+      ctx2d.fillText(`${z.name} · ${z.freq}Hz`, zx, labelY);
+
+      // gain readout under label, in DM Mono
+      ctx2d.fillStyle = isLive
+        ? '#10b981'
+        : 'rgba(20,20,20,0.38)';
+      ctx2d.font = '500 10px "DM Mono", ui-monospace, monospace';
+      const gNorm = g / 0.32; // normalise back to 0..1 display
+      ctx2d.fillText(gNorm.toFixed(2), zx, labelY + 14);
+    }
+
+    // 5. footer live numbers
+    sumGainEl.textContent = sumTarget.toFixed(3);
+    if (started) {
+      const lat = (engine.ctx.baseLatency ?? 0) * 1000;
+      rLat.textContent = `${lat.toFixed(1)} ms`;
+    }
+
+    requestAnimationFrame(frame);
+  }
+
+  // ─── Boot ───────────────────────────────────────────────────────
+  resize();
+  // populate initial readout values
+  vRadius.textContent = radiusFrac.toFixed(2);
+  vDepth.textContent  = depth.toFixed(2);
+  vTau.textContent    = `${tau.toFixed(2)} s`;
+  vFreq.textContent   = `${Math.round(80 + (1 - depth) * 2400)} Hz`;
+  filterStateEl.textContent = `${Math.round(80 + (1 - depth) * 2400)} Hz LP (idle)`;
+  requestAnimationFrame(frame);
+</script>
+
+</body>
+</html>

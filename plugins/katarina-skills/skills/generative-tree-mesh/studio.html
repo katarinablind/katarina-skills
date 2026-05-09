@@ -1,0 +1,1245 @@
+<!--
+  Generative Tree Mesh · Studio — Katarina Blind
+  ===============================================
+  Authoring inspector for the generative-tree-mesh Claude skill.
+
+  Lifts the actual tree builders from tree-music-map verbatim:
+    · LightParticleTree  — bundled-strand recursive branches (LineSegments)
+                           + animated additive shader trunk + glowing
+                           Points-foliage with breathing/beat uniforms.
+    · SkeletonTree       — bare wireframe recursive LineSegments tree
+                           with seeded RNG and subtle vertex-shader sway.
+    · SPECIES table      — 8 PNW species, each with a leaf-color theme.
+
+  Two modes:
+    · SINGLE — one large LightParticleTree dead-centered, slow auto-orbit.
+    · FOREST — the actual demo2.js forest layout: 15 LightParticleTrees
+               in clusters, plus 25 SkeletonTrees scattered around as
+               background context. Glow uniforms cycle so the scene
+               breathes the way the project's scene does.
+
+  All builder source ranges are noted at the top of each lifted block.
+  Self-contained — open via python3 -m http.server, or file://.
+  Tokens inlined from data-mapping/shared/tokens.css (see comment).
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Generative Tree Mesh · Studio</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+<script type="importmap">
+{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.162.0/build/three.module.js"}}
+</script>
+
+<style>
+/* === Inlined from data-mapping/shared/tokens.css ============================ */
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap');
+
+:root {
+  --bg:            #0a0a0a;
+  --surface:       #ffffff;
+  --surface-muted: #f1f1ee;
+  --surface-dark:  #111214;
+  --border:        rgba(0, 0, 0, 0.06);
+  --border-dark:   rgba(255, 255, 255, 0.05);
+  --text:          #141414;
+  --text-muted:    rgba(20, 20, 20, 0.55);
+  --text-subtle:   rgba(20, 20, 20, 0.38);
+  --text-inverse:        #f4f2ec;
+  --text-inverse-muted:  rgba(244, 242, 236, 0.55);
+  --text-inverse-subtle: rgba(244, 242, 236, 0.45);
+  --accent:        #10b981;
+  --accent-bg:     rgba(16, 185, 129, 0.12);
+  --amber:         #f59e0b;
+  --blue:          #3b82f6;
+  --red:           #ef4444;
+  --radius:        clamp(18px, 2vw, 26px);
+  --radius-inner:  clamp(10px, 1.2vw, 16px);
+  --radius-pill:   999px;
+  --font: 'DM Sans', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-mono: 'DM Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --fs-hero:    clamp(28px, 3.5vw, 40px);
+  --fs-heading: 14px;
+  --fs-body:    12px;
+  --fs-small:   11px;
+  --fs-micro:   10px;
+  --fs-nano:    9px;
+  --fw-regular:  400;
+  --fw-medium:   500;
+  --fw-semibold: 600;
+  --fw-bold:     700;
+  --ease:     cubic-bezier(0.4, 0, 0.2, 1);
+  --dur-fast: 0.18s;
+  --dur-base: 0.28s;
+  --shadow: 0 1px 2px rgba(15, 18, 24, 0.04),
+            0 10px 28px rgba(15, 18, 24, 0.08);
+  --gutter: clamp(10px, 1.4vw, 18px);
+  --pad-y:  clamp(10px, 2vh, 24px);
+  --pad-x:  clamp(10px, 2vw, 24px);
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  -webkit-font-smoothing: antialiased;
+}
+/* === End inlined tokens.css ================================================ */
+
+
+/* ─── Studio layout ───────────────────────────────── */
+body { height: 100vh; overflow: hidden; display: flex;
+  gap: var(--gutter); padding: var(--pad-y) var(--pad-x); }
+
+.col-main { flex: 1; display: flex; flex-direction: column;
+  gap: var(--gutter); min-width: 0; }
+
+.header { flex: 0 0 auto; display: flex; align-items: baseline;
+  justify-content: space-between; padding: 0 4px; gap: 12px; }
+.h-left { display: flex; align-items: baseline; gap: 12px; }
+.eyebrow {
+  font-family: var(--font-mono); font-size: var(--fs-nano);
+  font-weight: var(--fw-medium); letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--text-inverse);
+  background: rgba(244, 242, 236, 0.08); padding: 4px 10px;
+  border-radius: var(--radius-pill);
+  border: 1px solid rgba(244, 242, 236, 0.10);
+}
+.h-title { font-size: var(--fs-heading); font-weight: var(--fw-semibold);
+  color: var(--text-inverse-subtle); letter-spacing: -0.01em; }
+.h-byline { font-size: var(--fs-nano); color: var(--text-inverse-subtle);
+  font-weight: var(--fw-regular); letter-spacing: 0.06em;
+  text-transform: uppercase; opacity: 0.6; }
+
+.main-panel { flex: 1 1 0; min-height: 0; position: relative;
+  background: var(--surface-muted); border-radius: var(--radius);
+  border: 1px solid var(--border); box-shadow: var(--shadow);
+  overflow: hidden; display: flex; flex-direction: column; }
+
+.stage { flex: 1 1 0; min-height: 0; position: relative;
+  background: #0a0a0a;
+  display: flex; align-items: stretch; justify-content: stretch;
+  overflow: hidden; }
+.stage canvas { display: block !important; width: 100% !important;
+  height: 100% !important; cursor: grab; }
+.stage canvas:active { cursor: grabbing; }
+
+.stage-tag { position: absolute; top: 14px; padding: 5px 12px;
+  font-size: var(--fs-nano); font-weight: var(--fw-semibold);
+  font-family: var(--font-mono); letter-spacing: 0.10em;
+  text-transform: uppercase; color: var(--text-inverse);
+  background: rgba(20, 20, 24, 0.55); backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: var(--radius-pill); z-index: 2; }
+.stage-tag.left  { left: 14px; }
+.stage-tag.right { right: 14px;
+  display: flex; align-items: center; gap: 6px; }
+.stage-tag .dot { width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+
+.legend { position: absolute; bottom: 14px; left: 14px;
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 12px; background: rgba(20,20,24,0.55);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: var(--radius-pill); z-index: 2;
+  font-family: var(--font-mono); font-size: var(--fs-nano);
+  color: var(--text-inverse-muted); letter-spacing: 0.08em;
+  text-transform: uppercase; }
+
+
+/* ─── Sidebar (dark) ─────────────────────────────── */
+.sidebar { width: 320px; min-width: 320px; display: flex;
+  flex-direction: column; gap: var(--gutter); }
+
+.sb-card { background: var(--surface-dark); border-radius: var(--radius);
+  border: 1px solid var(--border-dark); box-shadow: var(--shadow);
+  padding: 20px 22px; color: var(--text-inverse); }
+.sb-card.scrollable { flex: 1 1 0; min-height: 0; overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.08) transparent; }
+.sb-card.scrollable::-webkit-scrollbar { width: 3px; }
+.sb-card.scrollable::-webkit-scrollbar-track { background: transparent; }
+.sb-card.scrollable::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.08); border-radius: 2px; }
+
+.readout {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px; border-radius: var(--radius-pill);
+  background: rgba(244, 242, 236, 0.04);
+  border: 1px solid rgba(244, 242, 236, 0.08);
+  font-family: var(--font-mono); font-size: var(--fs-micro);
+  font-weight: var(--fw-medium); letter-spacing: 0.06em;
+  color: var(--text-inverse); text-transform: uppercase;
+  font-variant-numeric: tabular-nums;
+  margin-bottom: 22px;
+}
+.readout .dot { width: 7px; height: 7px; border-radius: 50%;
+  background: var(--accent); box-shadow: 0 0 10px var(--accent);
+  flex-shrink: 0; }
+.readout .stats { flex: 1; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.readout .sep { color: var(--text-inverse-subtle); margin: 0 4px; }
+
+.sb-label { font-size: var(--fs-nano); font-weight: var(--fw-semibold);
+  letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--text-inverse-subtle); margin-bottom: 14px; }
+.sb-label:not(:first-of-type) { margin-top: 22px; }
+
+.mode-toggle {
+  display: flex; gap: 4px; padding: 4px;
+  background: rgba(244,242,236,0.04);
+  border: 1px solid rgba(244,242,236,0.08);
+  border-radius: var(--radius-pill);
+  margin-bottom: 8px;
+}
+.mode-toggle button {
+  flex: 1; padding: 8px 0;
+  background: transparent; border: none;
+  color: var(--text-inverse-muted);
+  font-family: var(--font-mono); font-size: var(--fs-micro);
+  font-weight: var(--fw-semibold); letter-spacing: 0.16em;
+  text-transform: uppercase; border-radius: var(--radius-pill);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease),
+              color var(--dur-fast) var(--ease);
+}
+.mode-toggle button:hover { color: var(--text-inverse); }
+.mode-toggle button.active {
+  background: var(--accent); color: #062a1f;
+  box-shadow: 0 0 0 1px rgba(16,185,129,0.3),
+              0 4px 12px rgba(16,185,129,0.25);
+}
+
+.ctrl { margin-bottom: 16px; }
+.ctrl:last-child { margin-bottom: 0; }
+.ctrl-head { display: flex; align-items: baseline;
+  justify-content: space-between; margin-bottom: 6px; }
+.ctrl-name { font-size: var(--fs-small); font-weight: var(--fw-medium);
+  color: var(--text-inverse); letter-spacing: -0.01em; }
+.ctrl-val {
+  font-family: var(--font-mono); font-size: var(--fs-micro);
+  font-weight: var(--fw-medium); color: var(--accent);
+  font-variant-numeric: tabular-nums; letter-spacing: 0.02em;
+  min-width: 40px; text-align: right;
+}
+.ctrl-desc { font-size: var(--fs-nano); color: var(--text-inverse-subtle);
+  margin-top: 4px; line-height: 1.5; letter-spacing: 0.02em; }
+
+input[type="range"] {
+  -webkit-appearance: none; appearance: none;
+  width: 100%; height: 18px; background: transparent;
+  cursor: pointer; display: block;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 2px; background: rgba(244,242,236,0.10); border-radius: 2px;
+}
+input[type="range"]::-moz-range-track {
+  height: 2px; background: rgba(244,242,236,0.10); border-radius: 2px;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 12px; height: 12px; border-radius: 50%;
+  background: var(--accent); margin-top: -5px;
+  border: 2px solid var(--surface-dark);
+  box-shadow: 0 0 0 1px rgba(16,185,129,0.4);
+  transition: transform var(--dur-fast) var(--ease);
+}
+input[type="range"]::-moz-range-thumb {
+  width: 12px; height: 12px; border-radius: 50%;
+  background: var(--accent); border: 2px solid var(--surface-dark);
+  box-shadow: 0 0 0 1px rgba(16,185,129,0.4);
+  transition: transform var(--dur-fast) var(--ease);
+}
+input[type="range"]:hover::-webkit-slider-thumb { transform: scale(1.15); }
+input[type="range"]:hover::-moz-range-thumb { transform: scale(1.15); }
+
+select {
+  width: 100%; padding: 8px 10px;
+  background: rgba(244,242,236,0.04);
+  color: var(--text-inverse);
+  border: 1px solid rgba(244,242,236,0.10);
+  border-radius: var(--radius-inner);
+  font-family: var(--font-mono); font-size: var(--fs-micro);
+  letter-spacing: 0.04em; cursor: pointer;
+  -webkit-appearance: none; appearance: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' stroke='rgba(244,242,236,0.55)' stroke-width='1.4' fill='none'/></svg>");
+  background-repeat: no-repeat; background-position: right 12px center;
+  padding-right: 28px;
+}
+
+.checkbox-row {
+  display: flex; align-items: center; gap: 10px;
+  font-size: var(--fs-small); color: var(--text-inverse);
+  cursor: pointer; user-select: none;
+  margin-top: 10px;
+}
+.checkbox-row input[type="checkbox"] {
+  -webkit-appearance: none; appearance: none;
+  width: 14px; height: 14px;
+  border: 1px solid rgba(244,242,236,0.25);
+  border-radius: 3px; background: transparent;
+  cursor: pointer; position: relative;
+  transition: all var(--dur-fast) var(--ease);
+}
+.checkbox-row input[type="checkbox"]:checked {
+  background: var(--accent); border-color: var(--accent);
+}
+.checkbox-row input[type="checkbox"]:checked::after {
+  content: ''; position: absolute; left: 3px; top: 0;
+  width: 5px; height: 9px;
+  border: solid var(--surface-dark);
+  border-width: 0 2px 2px 0; transform: rotate(45deg);
+}
+
+.detail { font-size: var(--fs-nano); color: var(--text-inverse-muted);
+  line-height: 1.65; letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums; }
+.detail code {
+  font-family: var(--font-mono);
+  background: rgba(255,255,255,0.06); padding: 1px 5px;
+  border-radius: 3px; font-size: 9px; color: var(--text-inverse);
+}
+
+.theme-swatches {
+  display: grid; grid-template-columns: repeat(6, 1fr);
+  gap: 6px; margin-bottom: 8px;
+}
+.theme-swatches button {
+  height: 28px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.08);
+  cursor: pointer; padding: 0; transition: transform var(--dur-fast);
+  position: relative;
+}
+.theme-swatches button:hover { transform: scale(1.08); }
+.theme-swatches button.active {
+  box-shadow: 0 0 0 2px var(--accent), 0 0 12px rgba(16,185,129,0.5);
+}
+
+.single-only, .forest-only { display: none; }
+body.is-single .single-only { display: block; }
+body.is-forest .forest-only { display: block; }
+</style>
+</head>
+<body class="is-single">
+
+<div class="col-main">
+  <div class="header">
+    <div class="h-left">
+      <span class="eyebrow">Studio · 08</span>
+      <span class="h-title">Generative Tree Mesh</span>
+    </div>
+    <div class="h-byline">LightParticleTree · SkeletonTree · forest assembly</div>
+  </div>
+
+  <div class="main-panel">
+    <div class="stage" id="stage">
+      <div class="stage-tag left" id="modeTag">SINGLE · LightParticleTree · centered</div>
+      <div class="stage-tag right"><span class="dot"></span>Drag to orbit · wheel zoom</div>
+      <div class="legend">bundled-strand recursion · additive Points foliage · LineSegments backdrop</div>
+    </div>
+  </div>
+</div>
+
+<div class="sidebar">
+  <div class="sb-card scrollable">
+
+    <div class="readout">
+      <span class="dot"></span>
+      <span class="stats" id="readout">MODE single <span class="sep">·</span> 0 trees <span class="sep">·</span> 60 FPS</span>
+    </div>
+
+    <div class="sb-label">Mode</div>
+    <div class="mode-toggle">
+      <button id="modeSingle" class="active" type="button">Single</button>
+      <button id="modeForest" type="button">Forest</button>
+    </div>
+
+    <div class="single-only">
+      <div class="sb-label">Species (PNW)</div>
+      <select id="species">
+        <option value="douglas-fir">Douglas Fir</option>
+        <option value="western-red-cedar">Western Red Cedar</option>
+        <option value="sitka-spruce">Sitka Spruce</option>
+        <option value="bigleaf-maple">Big Leaf Maple</option>
+        <option value="western-hemlock">Western Hemlock</option>
+        <option value="red-alder">Red Alder</option>
+        <option value="pacific-madrone">Pacific Madrone</option>
+        <option value="shore-pine">Shore Pine</option>
+      </select>
+
+      <div class="sb-label">Leaf theme</div>
+      <div class="theme-swatches" id="themeRow">
+        <!-- filled by JS, six themes from LightParticleTree.js -->
+      </div>
+
+      <div class="sb-label">Builder params</div>
+
+      <div class="ctrl">
+        <div class="ctrl-head">
+          <span class="ctrl-name">Height</span>
+          <span class="ctrl-val" id="vHeight">3.0</span>
+        </div>
+        <input type="range" id="height" min="1.5" max="5.0" step="0.1" value="3.0">
+        <div class="ctrl-desc">Driven into <code>params.height</code> in LightParticleTree.</div>
+      </div>
+
+      <div class="ctrl">
+        <div class="ctrl-head">
+          <span class="ctrl-name">Detail (recursion depth)</span>
+          <span class="ctrl-val" id="vDetail">7</span>
+        </div>
+        <input type="range" id="detail" min="4" max="9" step="1" value="7">
+        <div class="ctrl-desc">Iterations of <code>growBranch</code>. 7-8 = canopy.</div>
+      </div>
+
+      <div class="ctrl">
+        <div class="ctrl-head">
+          <span class="ctrl-name">Trunk strands</span>
+          <span class="ctrl-val" id="vStrands">12</span>
+        </div>
+        <input type="range" id="strands" min="5" max="22" step="1" value="12">
+        <div class="ctrl-desc">Bundled wires per branch — gives the woven trunk look.</div>
+      </div>
+
+      <div class="ctrl">
+        <div class="ctrl-head">
+          <span class="ctrl-name">Glow (proximity sim)</span>
+          <span class="ctrl-val" id="vGlow">0.40</span>
+        </div>
+        <input type="range" id="glow" min="0" max="1" step="0.01" value="0.40">
+        <div class="ctrl-desc">Drives <code>uGlow</code> uniform — what proximity does in the live scene.</div>
+      </div>
+
+      <div class="ctrl">
+        <div class="ctrl-head">
+          <span class="ctrl-name">Reroll seed</span>
+          <span class="ctrl-val" id="vSeed">42</span>
+        </div>
+        <input type="range" id="seed" min="0" max="500" step="1" value="42">
+        <div class="ctrl-desc">Math.random() spine — re-rolls the recursion shape.</div>
+      </div>
+    </div>
+
+    <div class="forest-only">
+      <div class="sb-label">Forest assembly</div>
+      <div class="ctrl-desc" style="margin-bottom: 14px">
+        Uses the actual <code>demo2.js</code> layout: 15 LightParticleTrees in
+        clusters (center + L/R groves + scattered), and 25 SkeletonTree
+        background instances at fixed positions. Same seed/index pattern
+        the project ships — <code>i * 7 + 42</code> for skeletons.
+      </div>
+
+      <div class="ctrl">
+        <div class="ctrl-head">
+          <span class="ctrl-name">Forest glow</span>
+          <span class="ctrl-val" id="vFglow">0.35</span>
+        </div>
+        <input type="range" id="fglow" min="0" max="1" step="0.01" value="0.35">
+        <div class="ctrl-desc">Pumps every LightParticleTree's <code>uGlow</code>.</div>
+      </div>
+
+      <label class="checkbox-row">
+        <input type="checkbox" id="showSkeletons" checked>
+        Show skeleton trees (background context)
+      </label>
+      <label class="checkbox-row">
+        <input type="checkbox" id="showLight" checked>
+        Show LightParticleTrees (hero)
+      </label>
+    </div>
+
+    <div class="sb-label">Camera</div>
+    <label class="checkbox-row">
+      <input type="checkbox" id="autoOrbit" checked>
+      Auto-orbit camera
+    </label>
+
+    <div class="sb-label">Notes</div>
+    <div class="detail">
+      Builders are lifted verbatim from
+      <code>tree-music-map/src/scene/LightParticleTree.js</code> and
+      <code>SkeletonTree.js</code>. Forest layout copied from
+      <code>src/demo2.js</code>. The species/theme tables are from
+      <code>src/data/trees.js</code> and the LightParticleTree theme array.
+    </div>
+
+  </div>
+</div>
+
+
+<script type="module">
+import * as THREE from 'three';
+
+// ════════════════════════════════════════════════════════════════════
+// === SPECIES: lifted from src/data/trees.js (lines 4-85)
+// === Used by the forest layout to pick per-tree color/category.
+// ════════════════════════════════════════════════════════════════════
+const SPECIES = {
+  'douglas-fir':       { label:'Douglas Fir',        category:'conifer',   color:[80,200,140]  },
+  'western-red-cedar': { label:'Western Red Cedar',  category:'conifer',   color:[120,160,220] },
+  'sitka-spruce':      { label:'Sitka Spruce',       category:'conifer',   color:[100,220,180] },
+  'bigleaf-maple':     { label:'Big Leaf Maple',     category:'deciduous', color:[240,180,80]  },
+  'western-hemlock':   { label:'Western Hemlock',    category:'conifer',   color:[140,120,220] },
+  'red-alder':         { label:'Red Alder',          category:'deciduous', color:[220,130,160] },
+  'pacific-madrone':   { label:'Pacific Madrone',    category:'broadleaf', color:[200,100,60]  },
+  'shore-pine':        { label:'Shore Pine',         category:'conifer',   color:[160,200,120] },
+};
+
+// Themes table from LightParticleTree.js lines 12-19
+const THEMES = [
+  { leaf: '#77bb41', name: 'green' },
+  { leaf: '#ff7700', name: 'orange' },
+  { leaf: '#ff66aa', name: 'pink' },
+  { leaf: '#ffffff', name: 'white' },
+  { leaf: '#66ccff', name: 'cyan' },
+  { leaf: '#ddaaff', name: 'lavender' },
+];
+const TRUNK_STYLES = ['#583400', '#dddddd', '#446688'];
+
+// terrainHeight shim — the live project samples a noise field;
+// for the studio we just return 0 (flat ground) because the scene
+// uses a small flat disc instead of the project's sculpted terrain.
+function terrainHeight(/* x, z */) { return 0; }
+
+
+// ════════════════════════════════════════════════════════════════════
+// === LightParticleTree: lifted verbatim from
+// === src/scene/LightParticleTree.js (lines 8-219).
+// === Class extends THREE.Group. Recursive growBranch() pushes
+// === bundled-strand line vertices; growRoots() does the same below
+// === ground; tip-of-branch leaf positions feed an additive Points
+// === geometry. Three ShaderMaterials: trunk wire, root wire, leaf
+// === point-sprite. Updated each frame via .update(time, glow, beat).
+// ════════════════════════════════════════════════════════════════════
+class LightParticleTree extends THREE.Group {
+  constructor(config = {}) {
+    super();
+
+    const themes = [
+      { leaf: '#77bb41', name: 'green' },
+      { leaf: '#ff7700', name: 'orange' },
+      { leaf: '#ff66aa', name: 'pink' },
+      { leaf: '#ffffff', name: 'white' },
+      { leaf: '#66ccff', name: 'cyan' },
+      { leaf: '#ddaaff', name: 'lavender' },
+    ];
+    const trunkStyles = ['#583400', '#dddddd', '#446688'];
+
+    const selectedTheme = config.theme || themes[Math.floor(Math.random() * themes.length)];
+    const selectedTrunk = config.trunkColor || trunkStyles[Math.floor(Math.random() * trunkStyles.length)];
+
+    this.params = {
+      trunkStrands: Math.max(5, config.trunkStrands || 8 + Math.random() * 12),
+      trunkThickness: 0.12 + (Math.random() * 0.1),
+      rootStrands: Math.min(5, config.rootStrands || 3 + Math.random() * 2),
+      height: config.height || (2.0 + Math.random() * 1.5),
+      detail: config.detail || (7 + Math.floor(Math.random() * 2)),
+      branchAngle: 0.4 + Math.random() * 0.2,
+      leafColor: selectedTheme.leaf,
+      leafSizeRange: [0.01, 0.35],
+      leafSpread: 2.5 + Math.random(),
+      wireColor: selectedTrunk,
+      rootColor: config.rootColor || '#00a3d7',
+      ...config,
+    };
+
+    this.uniforms = {
+      uTime: { value: 0 },
+      uGlow: { value: 0 },
+      uBeat: { value: 0 },
+    };
+
+    this._init();
+  }
+
+  _init() {
+    const trunkPos = [], rootPos = [], leafPos = [], leafSizes = [];
+
+    const growBranch = (start, dir, length, iter) => {
+      const end = start.clone().add(dir.clone().multiplyScalar(length));
+      const strands = this.params.trunkStrands;
+      const radius = this.params.trunkThickness * (iter / this.params.detail);
+
+      for (let i = 0; i < strands; i++) {
+        const theta = (i / strands) * Math.PI * 2;
+        const osX = Math.cos(theta) * radius, osZ = Math.sin(theta) * radius;
+        const oeX = Math.cos(theta) * radius * 0.7, oeZ = Math.sin(theta) * radius * 0.7;
+        trunkPos.push(start.x + osX, start.y, start.z + osZ, end.x + oeX, end.y, end.z + oeZ);
+      }
+
+      if (iter <= 0) {
+        for (let i = 0; i < 20; i++) {
+          leafPos.push(
+            end.x + (Math.random() - 0.5) * this.params.leafSpread,
+            end.y + (Math.random() - 0.5) * this.params.leafSpread,
+            end.z + (Math.random() - 0.5) * this.params.leafSpread
+          );
+          leafSizes.push(Math.random() * (this.params.leafSizeRange[1] - this.params.leafSizeRange[0]) + this.params.leafSizeRange[0]);
+        }
+        return;
+      }
+
+      for (let i = 0; i < 2; i++) {
+        const newDir = dir.clone();
+        newDir.applyAxisAngle(new THREE.Vector3(1, 0, 0), (Math.random() - 0.5) * this.params.branchAngle * 3);
+        newDir.applyAxisAngle(new THREE.Vector3(0, 0, 1), (Math.random() - 0.5) * this.params.branchAngle * 3);
+        growBranch(end, newDir, length * 0.75, iter - 1);
+      }
+    };
+
+    const growRoots = (start, dir, length, iter) => {
+      const end = start.clone().add(dir.clone().multiplyScalar(length));
+      const strands = this.params.rootStrands;
+      const radius = this.params.trunkThickness * 0.4;
+
+      for (let i = 0; i < strands; i++) {
+        const theta = (i / strands) * Math.PI * 2;
+        rootPos.push(
+          start.x + Math.cos(theta) * radius, start.y, start.z + Math.sin(theta) * radius,
+          end.x + Math.cos(theta) * radius, end.y, end.z + Math.sin(theta) * radius
+        );
+      }
+      if (iter <= 0) return;
+      for (let i = 0; i < 2; i++) {
+        const newDir = dir.clone();
+        newDir.x += (Math.random() - 0.5) * 1.2;
+        newDir.z += (Math.random() - 0.5) * 1.2;
+        newDir.normalize();
+        growRoots(end, newDir, length * 0.7, iter - 1);
+      }
+    };
+
+    growBranch(new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 1, 0), this.params.height * 0.5, this.params.detail);
+    growRoots(new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, -1, 0), 0.8, 5);
+
+    // Trunk — animated lines
+    const trunkGeom = new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(trunkPos, 3));
+    const trunkMat = new THREE.ShaderMaterial({
+      uniforms: {
+        ...this.uniforms,
+        uColor: { value: new THREE.Color(this.params.wireColor) },
+      },
+      transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
+      vertexShader: `
+        uniform float uTime, uGlow, uBeat;
+        varying float vY;
+        void main(){
+          vec3 pos = position;
+          float h = pos.y / 3.0;
+          pos.x += sin(uTime * 0.5 + h * 4.0) * h * h * 0.08;
+          pos.z += cos(uTime * 0.4 + h * 3.0) * h * h * 0.06;
+          vY = h;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+        }`,
+      fragmentShader: `
+        uniform vec3 uColor;
+        uniform float uGlow, uBeat;
+        varying float vY;
+        void main(){
+          float pulse = sin(vY * 20.0 - uBeat * 3.0) * 0.5 + 0.5;
+          float energy = uGlow * pulse * 0.6;
+          vec3 col = uColor * (0.5 + energy);
+          gl_FragColor = vec4(col, 0.4 + energy * 0.3 + uGlow * 0.1);
+        }`,
+    });
+    this.trunkMesh = new THREE.LineSegments(trunkGeom, trunkMat);
+    this.add(this.trunkMesh);
+
+    // Roots — glowing blue
+    const rootGeom = new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(rootPos, 3));
+    const rootMat = new THREE.ShaderMaterial({
+      uniforms: {
+        ...this.uniforms,
+        uColor: { value: new THREE.Color(this.params.rootColor) },
+      },
+      transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
+      vertexShader: `
+        uniform float uTime, uGlow;
+        void main(){
+          vec3 pos = position;
+          pos.y += sin(uTime * 0.6 + pos.x * 4.0) * 0.02;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+        }`,
+      fragmentShader: `
+        uniform vec3 uColor;
+        uniform float uGlow;
+        void main(){
+          gl_FragColor = vec4(uColor * (0.3 + uGlow * 0.5), 0.2 + uGlow * 0.4);
+        }`,
+    });
+    this.add(new THREE.LineSegments(rootGeom, rootMat));
+
+    // Foliage particles — music-reactive glow
+    const leafGeom = new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(leafPos, 3));
+    leafGeom.setAttribute('aSize', new THREE.Float32BufferAttribute(leafSizes, 1));
+    // Add random phase per particle
+    const phases = new Float32Array(leafSizes.length);
+    for (let i = 0; i < phases.length; i++) phases[i] = Math.random() * 6.2832;
+    leafGeom.setAttribute('aPh', new THREE.Float32BufferAttribute(phases, 1));
+
+    const leafMat = new THREE.ShaderMaterial({
+      uniforms: {
+        ...this.uniforms,
+        uColor: { value: new THREE.Color(this.params.leafColor) },
+        uPR: { value: Math.min(devicePixelRatio, 2) },
+      },
+      transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, depthTest: false,
+      vertexShader: `
+        uniform float uTime, uGlow, uBeat, uPR;
+        attribute float aSize, aPh;
+        varying float vA;
+        varying vec3 vCol;
+        void main(){
+          vec3 pos = position;
+          pos.x += sin(uTime * 0.3 + aPh * 3.0) * 0.15;
+          pos.y += cos(uTime * 0.25 + aPh * 2.0) * 0.1;
+          pos.z += sin(uTime * 0.2 + aPh * 4.0) * 0.12;
+          float beat = sin(uBeat * 2.0 - length(pos) * 0.5) * 0.5 + 0.5;
+          vec4 mv = modelViewMatrix * vec4(pos, 1.0);
+          float sz = aSize * (1.0 + uGlow * 0.5 + beat * uGlow * 0.3);
+          gl_PointSize = max(sz * uPR * (400.0 / max(-mv.z, 2.0)), 1.0);
+          float breathe = sin(uTime * 0.4 + aPh) * 0.15 + 0.85;
+          vA = (0.4 + uGlow * 0.4 + beat * 0.15) * breathe;
+          vCol = vec3(1.0);
+          gl_Position = projectionMatrix * mv;
+        }`,
+      fragmentShader: `
+        uniform vec3 uColor;
+        varying float vA;
+        void main(){
+          float d = distance(gl_PointCoord, vec2(0.5));
+          if(d > 0.5) discard;
+          float strength = pow(1.0 - d * 2.0, 2.0);
+          gl_FragColor = vec4(uColor * strength, vA * strength);
+        }`,
+    });
+    this.foliage = new THREE.Points(leafGeom, leafMat);
+    this.add(this.foliage);
+  }
+
+  update(time, glow, beat) {
+    this.uniforms.uTime.value = time;
+    this.uniforms.uGlow.value = glow;
+    this.uniforms.uBeat.value = beat || time;
+  }
+}
+
+
+// ════════════════════════════════════════════════════════════════════
+// === SkeletonTree: lifted verbatim from
+// === src/scene/SkeletonTree.js (lines 12-179).
+// === Seeded mulberry32 RNG → recursive branching collected into
+// === one BufferGeometry of LineSegments. Vertex shader does subtle
+// === sway based on per-vertex `aHeight` attribute. terrainHeight()
+// === is shimmed above for the studio's flat ground.
+// ════════════════════════════════════════════════════════════════════
+function mulberry32(seed) {
+  let s = seed | 0;
+  return function () {
+    s = (s + 0x6D2B79F5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const SK_VERT = `
+uniform float uTime;
+uniform float uBaseY;
+attribute float aHeight; // normalized 0-1 height along branch
+
+void main() {
+  vec3 pos = position;
+
+  // Very subtle sway — increases with height
+  float sway = aHeight * aHeight * 0.15;
+  float phase = pos.x * 0.1 + pos.z * 0.13 + uTime * 0.4;
+  pos.x += sin(phase) * sway;
+  pos.z += cos(phase * 0.7 + 1.0) * sway * 0.6;
+
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+}
+`;
+
+const SK_FRAG = `
+uniform vec3 uColor;
+
+void main() {
+  gl_FragColor = vec4(uColor, 1.0);
+}
+`;
+
+class SkeletonTree {
+  constructor(scene, x, z, height, seed) {
+    const rng = mulberry32(seed);
+
+    const vertices = [];
+    const heights = [];
+
+    const maxDepth = Math.floor(3 + rng() * 2.5);
+
+    const branch = (origin, dir, length, depth, parentHeight) => {
+      if (depth > maxDepth || length < 0.08) return;
+
+      const end = new THREE.Vector3(
+        origin.x + dir.x * length,
+        origin.y + dir.y * length,
+        origin.z + dir.z * length
+      );
+
+      const h0 = parentHeight;
+      const h1 = Math.min(parentHeight + length / height, 1.0);
+
+      vertices.push(origin.x, origin.y, origin.z);
+      vertices.push(end.x, end.y, end.z);
+      heights.push(h0);
+      heights.push(h1);
+
+      const forks = 2 + (rng() > 0.5 ? 1 : 0);
+      const childLength = length * (0.55 + rng() * 0.2);
+
+      for (let i = 0; i < forks; i++) {
+        const spreadAngle = (0.35 + rng() * 0.5);
+        const rotAngle = (i / forks) * Math.PI * 2 + rng() * 0.8;
+
+        const up = new THREE.Vector3(0, 1, 0);
+        const childDir = dir.clone();
+
+        const perp1 = new THREE.Vector3();
+        if (Math.abs(dir.y) < 0.99) {
+          perp1.crossVectors(dir, up).normalize();
+        } else {
+          perp1.crossVectors(dir, new THREE.Vector3(1, 0, 0)).normalize();
+        }
+        const perp2 = new THREE.Vector3().crossVectors(dir, perp1).normalize();
+
+        childDir.addScaledVector(perp1, Math.sin(rotAngle) * spreadAngle);
+        childDir.addScaledVector(perp2, Math.cos(rotAngle) * spreadAngle);
+        childDir.normalize();
+
+        childDir.y = Math.max(childDir.y, 0.15 + rng() * 0.2);
+        childDir.normalize();
+
+        branch(end, childDir, childLength, depth + 1, h1);
+      }
+    };
+
+    const groundY = terrainHeight(x, z, 0);
+
+    const trunkOrigin = new THREE.Vector3(0, 0, 0);
+    const trunkDir = new THREE.Vector3(
+      (rng() - 0.5) * 0.08,
+      1,
+      (rng() - 0.5) * 0.08
+    ).normalize();
+    const trunkLength = height * (0.3 + rng() * 0.15);
+
+    branch(trunkOrigin, trunkDir, trunkLength, 0, 0);
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute(
+      'position',
+      new THREE.Float32BufferAttribute(vertices, 3)
+    );
+    geo.setAttribute(
+      'aHeight',
+      new THREE.Float32BufferAttribute(heights, 1)
+    );
+
+    const shade = 0.18 + rng() * 0.10;
+    const color = new THREE.Color(shade, shade * 0.95, shade * 0.9);
+
+    const mat = new THREE.ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 },
+        uBaseY: { value: groundY },
+        uColor: { value: color },
+      },
+      vertexShader: SK_VERT,
+      fragmentShader: SK_FRAG,
+      transparent: false,
+      depthWrite: true,
+    });
+
+    this.mesh = new THREE.LineSegments(geo, mat);
+    this.mesh.position.set(x, groundY, z);
+
+    scene.add(this.mesh);
+  }
+
+  update(time) {
+    this.mesh.material.uniforms.uTime.value = time;
+  }
+
+  dispose() {
+    this.mesh.geometry.dispose();
+    this.mesh.material.dispose();
+    this.mesh.parent?.remove(this.mesh);
+  }
+}
+
+
+// ════════════════════════════════════════════════════════════════════
+// === FOREST LAYOUT: lifted from src/demo2.js (lines 14-122)
+// === The TREE_CONFIGS table places 15 LightParticleTrees in
+// === clusters (center · L grove · R grove · scattered), each with
+// === a per-instance theme override. SKELETON_POSITIONS adds 25
+// === SkeletonTree instances at fixed positions seeded by `i*7+42`.
+// === Coordinates compressed by ~0.45 to fit a small studio ground
+// === disc; relative layout preserved.
+// ════════════════════════════════════════════════════════════════════
+const TREE_CONFIGS = [
+  // Center cluster
+  { x: 0,   z: -12, species: 'western-red-cedar', height: 3.5, theme: { leaf: '#66ccff', name: 'cyan' },     trunkColor: '#446688' },
+  { x: -3,  z: -10, species: 'douglas-fir',       height: 2.8, theme: { leaf: '#77bb41', name: 'green' },    trunkColor: '#583400' },
+  { x: 3,   z: -14, species: 'bigleaf-maple',     height: 2.5, theme: { leaf: '#ff7700', name: 'orange' },   trunkColor: '#dddddd' },
+
+  // Left grove
+  { x: -18, z: -5,  species: 'sitka-spruce',      height: 3.2, theme: { leaf: '#ddaaff', name: 'lavender' } },
+  { x: -22, z: -8,  species: 'western-hemlock',   height: 2.6, theme: { leaf: '#77bb41', name: 'green' },    trunkColor: '#446688' },
+  { x: -15, z: 5,   species: 'red-alder',         height: 2.0, theme: { leaf: '#ff66aa', name: 'pink' } },
+
+  // Right grove
+  { x: 20,  z: -8,  species: 'pacific-madrone',   height: 3.0, theme: { leaf: '#ff7700', name: 'orange' },   trunkColor: '#583400' },
+  { x: 24,  z: -12, species: 'shore-pine',        height: 2.4, theme: { leaf: '#ffffff', name: 'white' } },
+  { x: 18,  z: 2,   species: 'douglas-fir',       height: 2.8, theme: { leaf: '#66ccff', name: 'cyan' } },
+
+  // Far scattered
+  { x: -30, z: -20, species: 'western-red-cedar', height: 3.8, theme: { leaf: '#ddaaff', name: 'lavender' }, trunkColor: '#dddddd' },
+  { x: 30,  z: -22, species: 'sitka-spruce',      height: 3.0, theme: { leaf: '#77bb41', name: 'green' } },
+  { x: -10, z: -30, species: 'bigleaf-maple',     height: 2.5, theme: { leaf: '#ff66aa', name: 'pink' },     trunkColor: '#446688' },
+  { x: 10,  z: -32, species: 'western-hemlock',   height: 2.8, theme: { leaf: '#ffffff', name: 'white' },    trunkColor: '#583400' },
+  { x: 0,   z: 10,  species: 'red-alder',         height: 2.2, theme: { leaf: '#ff7700', name: 'orange' } },
+  { x: -8,  z: -22, species: 'shore-pine',        height: 2.6, theme: { leaf: '#66ccff', name: 'cyan' },     trunkColor: '#dddddd' },
+];
+
+const SKELETON_POSITIONS = [
+  { x: 5, z: -8, h: 5 }, { x: -6, z: -14, h: 6 }, { x: 2, z: -18, h: 4.5 },
+  { x: -14, z: -2, h: 5.5 }, { x: -25, z: -4, h: 7 }, { x: -20, z: 2, h: 4 },
+  { x: -12, z: 8, h: 5 },
+  { x: 16, z: -4, h: 6 }, { x: 26, z: -6, h: 5 }, { x: 22, z: 4, h: 4.5 },
+  { x: 14, z: 6, h: 5.5 },
+  { x: -35, z: -15, h: 7 }, { x: -28, z: -25, h: 5.5 }, { x: 35, z: -18, h: 6 },
+  { x: 28, z: -28, h: 5 }, { x: -5, z: -35, h: 6.5 }, { x: 15, z: -36, h: 5 },
+  { x: -18, z: -28, h: 4.5 }, { x: 8, z: 12, h: 5 }, { x: -12, z: 14, h: 4 },
+  { x: -40, z: -8, h: 8 }, { x: 40, z: -10, h: 7 }, { x: 0, z: -40, h: 6 },
+  { x: -20, z: 15, h: 5 }, { x: 25, z: 15, h: 5.5 },
+];
+// ════════════════════════════════════════════════════════════════════
+
+
+// ─── Studio state ───────────────────────────────────────────
+const params = {
+  mode: 'single',
+  species: 'douglas-fir',
+  themeIdx: 4,            // cyan default (matches demo2 first tree)
+  height: 3.0,
+  detail: 7,
+  strands: 12,
+  glow: 0.40,
+  seed: 42,
+  fglow: 0.35,
+  showSkeletons: true,
+  showLight: true,
+  autoOrbit: true,
+};
+
+
+// ─── Three.js scene + lighting (matches SceneManager.js + demo2 overrides) ──
+const stageEl = document.getElementById('stage');
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setClearColor(0x000000, 0);
+const { width: W0, height: H0 } = stageEl.getBoundingClientRect();
+renderer.setSize(W0, H0);
+stageEl.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0x000004, 0.014);
+
+const camera = new THREE.PerspectiveCamera(45, W0 / H0, 0.1, 200);
+camera.position.set(0, 6, 10);
+
+// SceneManager.js lines 29-40 — the "near-black canvas" warm-key + cool-fill setup
+scene.add(new THREE.AmbientLight(0x1a1a2a, 0.4));
+const keyLight = new THREE.DirectionalLight(0xffeedd, 0.3);
+keyLight.position.set(20, 40, 30);
+scene.add(keyLight);
+const fillLight = new THREE.DirectionalLight(0x4060a0, 0.15);
+fillLight.position.set(-15, 20, -20);
+scene.add(fillLight);
+
+
+// Small ground disc — a stand-in for the live project's noise terrain.
+const groundGeo = new THREE.CircleGeometry(28, 64).rotateX(-Math.PI / 2);
+const groundMat = new THREE.MeshBasicMaterial({
+  color: 0x080a12, transparent: true, opacity: 0.85,
+});
+const ground = new THREE.Mesh(groundGeo, groundMat);
+ground.position.y = -0.02;
+scene.add(ground);
+
+// Subtle ring at the disc's edge so the eye finds the floor.
+const ringGeo = new THREE.RingGeometry(27.6, 28, 96).rotateX(-Math.PI / 2);
+const ringMat = new THREE.MeshBasicMaterial({
+  color: 0x1a2030, side: THREE.DoubleSide, transparent: true, opacity: 0.5,
+});
+scene.add(new THREE.Mesh(ringGeo, ringMat));
+
+
+// ─── SINGLE-TREE GROUP ──────────────────────────────────────
+let singleTree = null;
+function rebuildSingle() {
+  if (singleTree) {
+    scene.remove(singleTree);
+    singleTree.traverse(o => {
+      if (o.geometry) o.geometry.dispose();
+      if (o.material) o.material.dispose();
+    });
+  }
+  // Math.random() is seeded approximate via a per-rebuild offset
+  // so the seed slider re-rolls the recursion shape.
+  // (LightParticleTree itself uses Math.random — that's the project's
+  // intentional behavior. We just monkey-patch a deterministic source
+  // for the duration of construction so the seed slider is meaningful.)
+  const origRandom = Math.random;
+  let s = (params.seed | 0) ^ 0x9e3779b9;
+  Math.random = function () {
+    s = (s + 0x6D2B79F5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  try {
+    singleTree = new LightParticleTree({
+      height: params.height,
+      detail: params.detail,
+      trunkStrands: params.strands,
+      theme: THEMES[params.themeIdx],
+    });
+  } finally {
+    Math.random = origRandom;
+  }
+  scene.add(singleTree);
+}
+rebuildSingle();
+
+
+// ─── FOREST GROUP ───────────────────────────────────────────
+const forestGroup = new THREE.Group();
+scene.add(forestGroup);
+
+const lightTrees = [];          // populated when forest mode builds
+const skeletonTrees = [];
+
+function buildForest() {
+  // Compress the demo2 coordinates so the project's ~80m forest fits in
+  // the studio's 28-radius ground disc; relative layout is preserved.
+  const SCALE = 0.55;
+
+  // Skeleton trees first — background context, demo2.js lines 105-122
+  for (let i = 0; i < SKELETON_POSITIONS.length; i++) {
+    const sp = SKELETON_POSITIONS[i];
+    const st = new SkeletonTree(forestGroup, sp.x * SCALE, sp.z * SCALE, sp.h * 0.7, i * 7 + 42);
+    skeletonTrees.push(st);
+  }
+
+  // LightParticleTrees — demo2.js lines 124-174 pattern
+  for (let i = 0; i < TREE_CONFIGS.length; i++) {
+    const cfg = TREE_CONFIGS[i];
+    const tree = new LightParticleTree({
+      height: cfg.height * 0.85,
+      theme: cfg.theme,
+      trunkColor: cfg.trunkColor,
+      detail: 6 + Math.floor(Math.random() * 2),
+    });
+    const y = terrainHeight(cfg.x * SCALE, cfg.z * SCALE);
+    tree.position.set(cfg.x * SCALE, y, cfg.z * SCALE);
+    tree.rotation.y = Math.random() * Math.PI * 2;
+    const s = 0.85 + Math.random() * 0.3;
+    tree.scale.set(s, s, s);
+    forestGroup.add(tree);
+    lightTrees.push(tree);
+  }
+
+  forestGroup.visible = false; // Single mode is default
+}
+buildForest();
+
+
+// ─── Theme swatches ─────────────────────────────────────────
+const themeRow = document.getElementById('themeRow');
+THEMES.forEach((th, i) => {
+  const b = document.createElement('button');
+  b.style.background = th.leaf;
+  b.title = th.name;
+  if (i === params.themeIdx) b.classList.add('active');
+  b.addEventListener('click', () => {
+    params.themeIdx = i;
+    [...themeRow.children].forEach((c, j) => c.classList.toggle('active', j === i));
+    rebuildSingle();
+  });
+  themeRow.appendChild(b);
+});
+
+
+// ─── Camera: drag-orbit + wheel zoom ────────────────────────
+let camYaw = 0.55, camPitch = 0.45, camDist = 10.0;
+let dragging = false, dragX = 0, dragY = 0;
+renderer.domElement.addEventListener('pointerdown', e => {
+  dragging = true; dragX = e.clientX; dragY = e.clientY;
+  renderer.domElement.setPointerCapture(e.pointerId);
+});
+renderer.domElement.addEventListener('pointermove', e => {
+  if (!dragging) return;
+  camYaw   -= (e.clientX - dragX) * 0.008;
+  camPitch  = Math.max(0.10, Math.min(1.20, camPitch - (e.clientY - dragY) * 0.005));
+  dragX = e.clientX; dragY = e.clientY;
+});
+renderer.domElement.addEventListener('pointerup',     () => { dragging = false; });
+renderer.domElement.addEventListener('pointercancel', () => { dragging = false; });
+renderer.domElement.addEventListener('wheel', e => {
+  e.preventDefault();
+  camDist = Math.max(3, Math.min(40, camDist + e.deltaY * 0.02));
+}, { passive: false });
+
+
+// ─── UI wiring ──────────────────────────────────────────────
+function bindSlider(id, key, fmt, onChange) {
+  const el = document.getElementById(id);
+  const lab = document.getElementById('v' + id[0].toUpperCase() + id.slice(1));
+  const update = () => {
+    const v = parseFloat(el.value);
+    params[key] = (id === 'detail' || id === 'strands' || id === 'seed')
+      ? Math.round(v) : v;
+    if (lab) lab.textContent = fmt(params[key]);
+    if (onChange) onChange();
+  };
+  el.addEventListener('input', update);
+  update();
+}
+bindSlider('height',  'height',  v => v.toFixed(1), rebuildSingle);
+bindSlider('detail',  'detail',  v => v.toFixed(0), rebuildSingle);
+bindSlider('strands', 'strands', v => v.toFixed(0), rebuildSingle);
+bindSlider('glow',    'glow',    v => v.toFixed(2));
+bindSlider('seed',    'seed',    v => v.toFixed(0), rebuildSingle);
+bindSlider('fglow',   'fglow',   v => v.toFixed(2));
+
+// Species select
+document.getElementById('species').addEventListener('change', e => {
+  params.species = e.target.value;
+});
+
+// Mode toggle
+const modeSingleBtn = document.getElementById('modeSingle');
+const modeForestBtn = document.getElementById('modeForest');
+const modeTag       = document.getElementById('modeTag');
+function setMode(m) {
+  params.mode = m;
+  document.body.classList.toggle('is-single', m === 'single');
+  document.body.classList.toggle('is-forest', m === 'forest');
+  modeSingleBtn.classList.toggle('active', m === 'single');
+  modeForestBtn.classList.toggle('active', m === 'forest');
+  if (singleTree) singleTree.visible = m === 'single';
+  forestGroup.visible = m === 'forest';
+  if (m === 'single') {
+    camYaw = 0.55; camPitch = 0.45; camDist = 10;
+    modeTag.textContent = 'SINGLE · LightParticleTree · centered';
+  } else {
+    camYaw = 0.0; camPitch = 0.55; camDist = 28;
+    modeTag.textContent = 'FOREST · 15 light + 25 skeleton · demo2 layout';
+  }
+}
+modeSingleBtn.addEventListener('click', () => setMode('single'));
+modeForestBtn.addEventListener('click', () => setMode('forest'));
+
+// Forest visibility toggles
+document.getElementById('showSkeletons').addEventListener('change', e => {
+  params.showSkeletons = e.target.checked;
+  for (const st of skeletonTrees) st.mesh.visible = params.showSkeletons;
+});
+document.getElementById('showLight').addEventListener('change', e => {
+  params.showLight = e.target.checked;
+  for (const t of lightTrees) t.visible = params.showLight;
+});
+
+document.getElementById('autoOrbit').addEventListener('change', e => {
+  params.autoOrbit = e.target.checked;
+});
+
+const readoutEl = document.getElementById('readout');
+
+
+// ─── Frame loop ─────────────────────────────────────────────
+let last = performance.now(), lastReadout = 0, fpsAvg = 60;
+function frame() {
+  requestAnimationFrame(frame);
+  const now = performance.now();
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  const t = now / 1000;
+
+  if (params.autoOrbit && !dragging) camYaw += dt * 0.18;
+
+  if (params.mode === 'single') {
+    if (singleTree) singleTree.update(t, params.glow, t);
+  } else {
+    // Pulse glow per tree from a phase offset so the forest "breathes"
+    // — same spirit as proximityMap drives in the live demo2 scene.
+    for (let i = 0; i < lightTrees.length; i++) {
+      const phase = i * 0.7;
+      const breathing = (Math.sin(t * 0.5 + phase) * 0.5 + 0.5) * 0.4;
+      lightTrees[i].update(t, params.fglow + breathing, t);
+    }
+    for (const st of skeletonTrees) st.update(t);
+  }
+
+  // Camera orbit
+  const lookY = params.mode === 'single' ? params.height * 0.5 : 1.8;
+  const cy = Math.cos(camPitch), sy = Math.sin(camPitch);
+  camera.position.set(
+    Math.sin(camYaw) * camDist * cy,
+    lookY + sy * camDist,
+    Math.cos(camYaw) * camDist * cy,
+  );
+  camera.lookAt(0, lookY, 0);
+
+  renderer.render(scene, camera);
+
+  if (now - lastReadout > 160) {
+    lastReadout = now;
+    fpsAvg = fpsAvg * 0.9 + (1 / Math.max(0.001, dt)) * 0.1;
+    const treeCount = params.mode === 'single' ? 1 :
+      (params.showLight ? lightTrees.length : 0) +
+      (params.showSkeletons ? skeletonTrees.length : 0);
+    readoutEl.innerHTML =
+      `MODE ${params.mode}` +
+      ` <span class="sep">·</span> ${treeCount} trees` +
+      ` <span class="sep">·</span> ${fpsAvg.toFixed(0)} FPS`;
+  }
+}
+frame();
+
+
+// ─── Resize ─────────────────────────────────────────────────
+addEventListener('resize', () => {
+  const { width, height } = stageEl.getBoundingClientRect();
+  renderer.setSize(width, height);
+  camera.aspect = width / height;
+  camera.updateProjectionMatrix();
+});
+
+setMode('single');
+</script>
+
+</body>
+</html>

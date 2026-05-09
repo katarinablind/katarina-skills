@@ -1,0 +1,17 @@
+{
+  "name": "katarina-skills",
+  "version": "0.1.0",
+  "description": "A bundle of 12 generative, interactive, and visualization skills for Claude Code: marching-squares contours, 3D terrain with overlay lines, filled-band topology, minimap/radar HUDs, generative tree meshes, highlightable grass fields, swimming fish tanks, realtime presence pings, proximity audio mapping, operable vehicle meshes, SVG path-grow animation, and a p5.js+React portal pattern.",
+  "author": {
+    "name": "Katarina Blind"
+  },
+  "keywords": [
+    "skills",
+    "threejs",
+    "p5js",
+    "generative",
+    "visualization",
+    "interactive",
+    "creative-coding"
+  ]
+}

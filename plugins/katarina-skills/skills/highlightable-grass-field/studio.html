@@ -1,0 +1,794 @@
+<!--
+  Highlightable Grass Field — Studio
+  ==================================
+  Interactive demo for the highlightable-grass-field Claude skill.
+
+  Renders the actual GhostGrass technique from
+  tree-music-map/src/scene/GhostGrass.js — an InstancedMesh of
+  PlaneGeometry quads with a custom ShaderMaterial that does GLSL
+  simplex-noise wind sway and cursor-proximity color highlighting
+  entirely on the GPU. The only per-frame JS work is updating two
+  uniforms (uTime, uCursor); the cursor world position comes from a
+  raycast against a flat ground plane.
+
+  Mesh / shader source attributions are in the code blocks below.
+  Self-contained — open via python3 -m http.server, or file://.
+  Tokens inlined from data-mapping/shared/tokens.css (see comment).
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Highlightable Grass · Per-Blade Proximity · Studio</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+<script type="importmap">
+{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.162.0/build/three.module.js"}}
+</script>
+
+<style>
+/* === Inlined from data-mapping/shared/tokens.css ============================ */
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap');
+
+:root {
+  --bg:            #0a0a0a;
+  --surface:       #ffffff;
+  --surface-muted: #f1f1ee;
+  --surface-dark:  #111214;
+  --border:        rgba(0, 0, 0, 0.06);
+  --border-dark:   rgba(255, 255, 255, 0.05);
+  --text:          #141414;
+  --text-muted:    rgba(20, 20, 20, 0.55);
+  --text-subtle:   rgba(20, 20, 20, 0.38);
+  --text-inverse:        #f4f2ec;
+  --text-inverse-muted:  rgba(244, 242, 236, 0.55);
+  --text-inverse-subtle: rgba(244, 242, 236, 0.45);
+  --accent:        #10b981;
+  --accent-bg:     rgba(16, 185, 129, 0.12);
+  --amber:         #f59e0b;
+  --blue:          #3b82f6;
+  --red:           #ef4444;
+  --radius:        clamp(18px, 2vw, 26px);
+  --radius-inner:  clamp(10px, 1.2vw, 16px);
+  --radius-pill:   999px;
+  --font: 'DM Sans', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-mono: 'DM Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --fs-hero:    clamp(28px, 3.5vw, 40px);
+  --fs-heading: 14px;
+  --fs-body:    12px;
+  --fs-small:   11px;
+  --fs-micro:   10px;
+  --fs-nano:    9px;
+  --fw-regular:  400;
+  --fw-medium:   500;
+  --fw-semibold: 600;
+  --fw-bold:     700;
+  --ease:     cubic-bezier(0.4, 0, 0.2, 1);
+  --dur-fast: 0.18s;
+  --dur-base: 0.28s;
+  --shadow: 0 1px 2px rgba(15, 18, 24, 0.04),
+            0 10px 28px rgba(15, 18, 24, 0.08);
+  --gutter: clamp(10px, 1.4vw, 18px);
+  --pad-y:  clamp(10px, 2vh, 24px);
+  --pad-x:  clamp(10px, 2vw, 24px);
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  -webkit-font-smoothing: antialiased;
+}
+/* === End inlined tokens.css ================================================ */
+
+
+/* --- Studio layout (flex on body, direct parent of col-main + sidebar) --- */
+body { height: 100vh; overflow: hidden; display: flex;
+  gap: var(--gutter); padding: var(--pad-y) var(--pad-x); }
+
+.col-main { flex: 1; display: flex; flex-direction: column;
+  gap: var(--gutter); min-width: 0; }
+
+.header { flex: 0 0 auto; display: flex; align-items: baseline;
+  justify-content: space-between; padding: 0 4px; gap: 12px; }
+.h-left { display: flex; align-items: baseline; gap: 12px; }
+.eyebrow {
+  font-family: var(--font-mono); font-size: var(--fs-nano);
+  font-weight: var(--fw-medium); letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--text-inverse);
+  background: rgba(244, 242, 236, 0.08); padding: 4px 10px;
+  border-radius: var(--radius-pill);
+  border: 1px solid rgba(244, 242, 236, 0.10);
+}
+.h-title { font-size: var(--fs-heading); font-weight: var(--fw-semibold);
+  color: var(--text-inverse-subtle); letter-spacing: -0.01em; }
+.h-byline { font-size: var(--fs-nano); color: var(--text-inverse-subtle);
+  font-weight: var(--fw-regular); letter-spacing: 0.06em;
+  text-transform: uppercase; opacity: 0.6; }
+
+.main-panel { flex: 1 1 0; min-height: 0; position: relative;
+  background: var(--surface-muted); border-radius: var(--radius);
+  border: 1px solid var(--border); box-shadow: var(--shadow);
+  overflow: hidden; display: flex; flex-direction: column; }
+
+.stage { flex: 1 1 0; min-height: 0; position: relative;
+  background: #04060a;
+  display: flex; align-items: stretch; justify-content: stretch;
+  overflow: hidden; }
+.stage canvas { display: block !important; width: 100% !important;
+  height: 100% !important; cursor: crosshair; }
+
+.stage-tag { position: absolute; top: 14px; padding: 5px 12px;
+  font-size: var(--fs-nano); font-weight: var(--fw-semibold);
+  font-family: var(--font-mono); letter-spacing: 0.10em;
+  text-transform: uppercase; color: var(--text-inverse);
+  background: rgba(20, 20, 24, 0.55); backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: var(--radius-pill); z-index: 2; }
+.stage-tag.left  { left: 14px; }
+.stage-tag.right { right: 14px;
+  display: flex; align-items: center; gap: 6px; }
+.stage-tag .dot { width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+
+.legend { position: absolute; bottom: 14px; left: 14px;
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 12px; background: rgba(20,20,24,0.55);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: var(--radius-pill); z-index: 2;
+  font-family: var(--font-mono); font-size: var(--fs-nano);
+  color: var(--text-inverse-muted); letter-spacing: 0.08em;
+  text-transform: uppercase; }
+
+
+/* --- Sidebar (dark) --- */
+.sidebar { width: 320px; min-width: 320px; display: flex;
+  flex-direction: column; gap: var(--gutter); }
+
+.sb-card { background: var(--surface-dark); border-radius: var(--radius);
+  border: 1px solid var(--border-dark); box-shadow: var(--shadow);
+  padding: 20px 22px; color: var(--text-inverse); }
+.sb-card.scrollable { flex: 1 1 0; min-height: 0; overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.08) transparent; }
+.sb-card.scrollable::-webkit-scrollbar { width: 3px; }
+.sb-card.scrollable::-webkit-scrollbar-track { background: transparent; }
+.sb-card.scrollable::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.08); border-radius: 2px; }
+
+.readout {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px; border-radius: var(--radius-pill);
+  background: rgba(244, 242, 236, 0.04);
+  border: 1px solid rgba(244, 242, 236, 0.08);
+  font-family: var(--font-mono); font-size: var(--fs-micro);
+  font-weight: var(--fw-medium); letter-spacing: 0.06em;
+  color: var(--text-inverse); text-transform: uppercase;
+  font-variant-numeric: tabular-nums;
+  margin-bottom: 22px;
+}
+.readout .dot { width: 7px; height: 7px; border-radius: 50%;
+  background: var(--accent); box-shadow: 0 0 10px var(--accent);
+  flex-shrink: 0; }
+.readout .stats { flex: 1; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.readout .sep { color: var(--text-inverse-subtle); margin: 0 4px; }
+
+.sb-label { font-size: var(--fs-nano); font-weight: var(--fw-semibold);
+  letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--text-inverse-subtle); margin-bottom: 14px; }
+.sb-label:not(:first-of-type) { margin-top: 22px; }
+
+.ctrl { margin-bottom: 16px; }
+.ctrl:last-child { margin-bottom: 0; }
+.ctrl-head { display: flex; align-items: baseline;
+  justify-content: space-between; margin-bottom: 6px; }
+.ctrl-name { font-size: var(--fs-small); font-weight: var(--fw-medium);
+  color: var(--text-inverse); letter-spacing: -0.01em; }
+.ctrl-val {
+  font-family: var(--font-mono); font-size: var(--fs-micro);
+  font-weight: var(--fw-medium); color: var(--accent);
+  font-variant-numeric: tabular-nums; letter-spacing: 0.02em;
+  min-width: 40px; text-align: right;
+}
+.ctrl-desc { font-size: var(--fs-nano); color: var(--text-inverse-subtle);
+  margin-top: 4px; line-height: 1.5; letter-spacing: 0.02em; }
+
+input[type="range"] {
+  -webkit-appearance: none; appearance: none;
+  width: 100%; height: 18px; background: transparent;
+  cursor: pointer; display: block;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 2px; background: rgba(244,242,236,0.10); border-radius: 2px;
+}
+input[type="range"]::-moz-range-track {
+  height: 2px; background: rgba(244,242,236,0.10); border-radius: 2px;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 12px; height: 12px; border-radius: 50%;
+  background: var(--accent); margin-top: -5px;
+  border: 2px solid var(--surface-dark);
+  box-shadow: 0 0 0 1px rgba(16,185,129,0.4);
+  transition: transform var(--dur-fast) var(--ease);
+}
+input[type="range"]::-moz-range-thumb {
+  width: 12px; height: 12px; border-radius: 50%;
+  background: var(--accent); border: 2px solid var(--surface-dark);
+  box-shadow: 0 0 0 1px rgba(16,185,129,0.4);
+  transition: transform var(--dur-fast) var(--ease);
+}
+input[type="range"]:hover::-webkit-slider-thumb { transform: scale(1.15); }
+input[type="range"]:hover::-moz-range-thumb { transform: scale(1.15); }
+
+.checkbox-row {
+  display: flex; align-items: center; gap: 10px;
+  font-size: var(--fs-small); color: var(--text-inverse);
+  cursor: pointer; user-select: none;
+}
+.checkbox-row input[type="checkbox"] {
+  -webkit-appearance: none; appearance: none;
+  width: 14px; height: 14px;
+  border: 1px solid rgba(244,242,236,0.25);
+  border-radius: 3px; background: transparent;
+  cursor: pointer; position: relative;
+  transition: all var(--dur-fast) var(--ease);
+}
+.checkbox-row input[type="checkbox"]:checked {
+  background: var(--accent); border-color: var(--accent);
+}
+.checkbox-row input[type="checkbox"]:checked::after {
+  content: ''; position: absolute; left: 3px; top: 0;
+  width: 5px; height: 9px;
+  border: solid var(--surface-dark);
+  border-width: 0 2px 2px 0; transform: rotate(45deg);
+}
+
+.detail { font-size: var(--fs-nano); color: var(--text-inverse-muted);
+  line-height: 1.65; letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums; }
+.detail code {
+  font-family: var(--font-mono);
+  background: rgba(255,255,255,0.06); padding: 1px 5px;
+  border-radius: 3px; font-size: 9px; color: var(--text-inverse);
+}
+</style>
+</head>
+<body>
+
+<div class="col-main">
+  <div class="header">
+    <div class="h-left">
+      <span class="eyebrow">Studio · 09</span>
+      <span class="h-title">Highlightable Grass &middot; Per-Blade Proximity</span>
+    </div>
+    <div class="h-byline">InstancedMesh quads &middot; GLSL sway &middot; uCursor uniform</div>
+  </div>
+
+  <div class="main-panel">
+    <div class="stage" id="stage">
+      <div class="stage-tag left">GHOSTGRASS &middot; shader-driven proximity</div>
+      <div class="stage-tag right"><span class="dot"></span>Move cursor over field</div>
+      <div class="legend">verbatim from tree-music-map/src/scene/GhostGrass.js</div>
+    </div>
+  </div>
+</div>
+
+<div class="sidebar">
+  <div class="sb-card scrollable">
+
+    <div class="readout">
+      <span class="dot"></span>
+      <span class="stats" id="readout">BLADES 20000 <span class="sep">&middot;</span> CURSOR off <span class="sep">&middot;</span> 60 FPS</span>
+    </div>
+
+    <div class="sb-label">Field</div>
+
+    <div class="ctrl">
+      <div class="ctrl-head">
+        <span class="ctrl-name">Blade count</span>
+        <span class="ctrl-val" id="vCount">20000</span>
+      </div>
+      <input type="range" id="count" min="2000" max="80000" step="1000" value="20000">
+      <div class="ctrl-desc">InstancedMesh size. Rebuilds the mesh on change.</div>
+    </div>
+
+    <div class="ctrl">
+      <div class="ctrl-head">
+        <span class="ctrl-name">Field area</span>
+        <span class="ctrl-val" id="vArea">60</span>
+      </div>
+      <input type="range" id="area" min="20" max="120" step="2" value="60">
+      <div class="ctrl-desc">Square side, world units. Blades scatter uniformly inside.</div>
+    </div>
+
+    <div class="ctrl">
+      <div class="ctrl-head">
+        <span class="ctrl-name">Blade height</span>
+        <span class="ctrl-val" id="vHeight">0.70</span>
+      </div>
+      <input type="range" id="height" min="0.2" max="2.0" step="0.05" value="0.7">
+      <div class="ctrl-desc">Drives the <code>uHeight</code> uniform &mdash; live, no rebuild.</div>
+    </div>
+
+    <div class="sb-label">Highlight</div>
+
+    <div class="ctrl">
+      <div class="ctrl-head">
+        <span class="ctrl-name">Sway radius</span>
+        <span class="ctrl-val" id="vSway">10.0</span>
+      </div>
+      <input type="range" id="sway" min="2" max="30" step="0.5" value="10">
+      <div class="ctrl-desc">Vertex-shader push radius near cursor.</div>
+    </div>
+
+    <div class="ctrl">
+      <div class="ctrl-head">
+        <span class="ctrl-name">Color radius</span>
+        <span class="ctrl-val" id="vGlow">14.0</span>
+      </div>
+      <input type="range" id="glow" min="2" max="40" step="0.5" value="14">
+      <div class="ctrl-desc">Fragment-shader green glow radius.</div>
+    </div>
+
+    <div class="sb-label">Camera</div>
+    <label class="checkbox-row">
+      <input type="checkbox" id="autoOrbit" checked>
+      Auto-orbit camera
+    </label>
+
+    <div class="sb-label">Notes</div>
+    <div class="detail">
+      Grass is one <code>InstancedMesh</code> of <code>PlaneGeometry</code>
+      quads. All sway and proximity coloring happen in a custom
+      <code>ShaderMaterial</code> &mdash; the only per-frame JS work is
+      writing two uniforms: <code>uTime</code> and <code>uCursor</code>.
+      The cursor world position comes from raycasting against an invisible
+      ground plane at y=0. Additive blending gives the ghostly halo.
+    </div>
+
+  </div>
+</div>
+
+
+<script type="module">
+import * as THREE from 'three';
+
+// ════════════════════════════════════════════════════════════════════
+// === GhostGrass: lifted verbatim from
+// === tree-music-map/src/scene/GhostGrass.js (lines 1-230).
+// === Modifications: (1) sway / glow radii are extracted into uniforms
+// === (uSwayRadius, uGlowRadius) so the studio sliders have something
+// === to drive; (2) the embedded terrainY noise inside the vertex
+// === shader is replaced with a flat 0 since this studio renders a
+// === flat field rather than the project's noise terrain. Geometry,
+// === blade construction, additive shader material, instance
+// === placement, and update() shape are otherwise unchanged.
+// ════════════════════════════════════════════════════════════════════
+
+// GLSL simplex noise (same as Terrain.js / Particles.js)
+const SN = `
+vec3 _m3(vec3 x){return x-floor(x*(1./289.))*289.;}
+vec4 _m4(vec4 x){return x-floor(x*(1./289.))*289.;}
+vec4 _p4(vec4 x){return _m4(((x*34.)+1.)*x);}
+float snoise(vec3 v){
+  const vec2 C=vec2(1./6.,1./3.);
+  vec3 i=floor(v+dot(v,C.yyy)),x0=v-i+dot(i,C.xxx);
+  vec3 g=step(x0.yzx,x0.xyz),l=1.-g,
+       i1=min(g,l.zxy),i2=max(g,l.zxy),
+       x1=x0-i1+C.x,x2=x0-i2+C.y,x3=x0-.5;
+  i=_m3(i);
+  vec4 pp=_p4(_p4(_p4(i.z+vec4(0,i1.z,i2.z,1))+i.y+vec4(0,i1.y,i2.y,1))+i.x+vec4(0,i1.x,i2.x,1));
+  vec4 m=max(.6-vec4(dot(x0,x0),dot(x1,x1),dot(x2,x2),dot(x3,x3)),0.);
+  m=m*m*m*m;
+  vec4 xv=2.*fract(pp/41.)-1.,h=abs(xv)-.5,ox=floor(xv+.5),a0=xv-ox;
+  m*=1.79284-.85374*(a0*a0+h*h);
+  vec4 gv;
+  gv.x=a0.x*x0.x+h.x*x0.y;
+  gv.yzw=a0.yzw*vec3(x1.x,x2.x,x3.x)+h.yzw*vec3(x1.y,x2.y,x3.y);
+  return 130.*dot(m,gv);
+}`;
+
+const VERT = SN + `
+uniform float uTime;
+uniform vec3  uCursor;
+uniform float uHeight;
+uniform float uSwayRadius;
+
+varying vec2  vUv;
+varying float vAlpha;
+varying float vCursorDist;
+varying float vRelativeHeight;
+
+float terrainY(vec2 p) {
+  // Studio is flat — project's GhostGrass.js samples a snoise terrain here.
+  return 0.0;
+}
+
+void main() {
+  vUv = uv;
+
+  // Extract instance world position and rotation from instanceMatrix
+  vec3 basePos = vec3(instanceMatrix[3].x, instanceMatrix[3].y, instanceMatrix[3].z);
+  float worldX = basePos.x;
+  float worldZ = basePos.z;
+
+  // Compute terrain height at blade base
+  float groundY = terrainY(vec2(worldX, worldZ));
+
+  // Local vertex position (blade quad, base at y=0, tip at y=bladeHeight)
+  vec3 localPos = position;
+
+  // Scale blade height
+  float h = uHeight;
+  localPos.y *= h;
+
+  vRelativeHeight = clamp(localPos.y / max(h, 0.001), 0.0, 1.0);
+
+  // --- Gentle multi-octave wind ---
+  float windTime = uTime * 0.5;
+  // Slow rolling breeze
+  float wind1 = snoise(vec3(worldX * 0.025, worldZ * 0.025, windTime * 0.3)) * 0.5;
+  // Soft turbulence
+  float wind2 = snoise(vec3(worldX * 0.07, worldZ * 0.07, windTime * 0.6 + 3.0)) * 0.2;
+  // Light flutter
+  float wind3 = snoise(vec3(worldX * 0.15, worldZ * 0.15, windTime * 1.0 + 7.0)) * 0.08;
+  float windTotal = wind1 + wind2 + wind3;
+
+  // Cursor proximity: intensify wind near cursor
+  float dx0 = worldX - uCursor.x;
+  float dz0 = worldZ - uCursor.z;
+  float cursorDist = sqrt(dx0 * dx0 + dz0 * dz0);
+  float cursorWind = 1.0 - smoothstep(0.0, uSwayRadius, cursorDist);
+  cursorWind *= cursorWind; // quadratic
+  // Push grass away from cursor + add turbulence
+  float cursorPushX = (cursorDist > 0.1) ? dx0 / cursorDist : 0.0;
+  float cursorPushZ = (cursorDist > 0.1) ? dz0 / cursorDist : 0.0;
+  float cursorTurb = snoise(vec3(worldX * 0.3, worldZ * 0.3, uTime * 2.0)) * 0.4;
+
+  // Base sway — gentle, tip-weighted
+  float swayStrength = vRelativeHeight * vRelativeHeight * 0.06;
+  localPos.x += windTotal * swayStrength;
+  localPos.z += windTotal * swayStrength * 0.6;
+
+  // Cursor-driven extra sway — stronger, more intense near cursor
+  float cursorSway = cursorWind * vRelativeHeight * 0.25;
+  localPos.x += (cursorPushX * 0.6 + cursorTurb) * cursorSway;
+  localPos.z += (cursorPushZ * 0.6 + cursorTurb * 0.7) * cursorSway;
+
+  // Apply instance rotation (from instanceMatrix) to the local position
+  // Extract the 3x3 rotation part of instanceMatrix
+  mat3 rotMat = mat3(instanceMatrix[0].xyz, instanceMatrix[1].xyz, instanceMatrix[2].xyz);
+  vec3 rotatedPos = rotMat * localPos;
+
+  // Final world position
+  vec3 worldPos = rotatedPos + vec3(worldX, groundY, worldZ);
+
+  // Distance to cursor (xz plane)
+  float dx = worldPos.x - uCursor.x;
+  float dz = worldPos.z - uCursor.z;
+  vCursorDist = sqrt(dx * dx + dz * dz);
+
+  // Edge fade: fade out at 50-60 unit boundary
+  float edgeDist = max(abs(worldX), abs(worldZ));
+  float edgeFade = 1.0 - smoothstep(50.0, 60.0, edgeDist);
+
+  // Windiness affects base alpha subtly
+  float windAlpha = 0.5 + 0.5 * (wind1 * 0.5 + 0.5);
+  vAlpha = edgeFade * (0.5 + 0.2 * windAlpha);
+
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(worldPos, 1.0);
+}
+`;
+
+const FRAG = `
+uniform float uGlowRadius;
+
+varying vec2  vUv;
+varying float vAlpha;
+varying float vCursorDist;
+varying float vRelativeHeight;
+
+void main() {
+  // Circular ghost dot with soft glow
+  float dist = length(vUv - 0.5);
+  if (dist > 0.5) discard;
+  float softEdge = smoothstep(0.5, 0.1, dist);
+
+  // Base color: very dark green (inactive/dormant look)
+  vec3 baseColor = vec3(0.03, 0.08, 0.04);
+
+  // Cursor proximity: transition to vivid green (alive)
+  float cursorInfluence = 1.0 - smoothstep(0.0, uGlowRadius, vCursorDist);
+  cursorInfluence *= cursorInfluence; // quadratic falloff
+
+  vec3 brightGreen = vec3(0.06, 0.28, 0.1);
+  vec3 color = mix(baseColor, brightGreen, cursorInfluence * 0.9);
+
+  // Subtle brighten near cursor
+  float brightness = 1.0 + cursorInfluence * 0.8;
+  color *= brightness;
+
+  // Height-based tint: tips slightly brighter
+  color = mix(color * 0.6, color, vRelativeHeight * 0.8 + 0.4);
+
+  float alpha = vAlpha * softEdge;
+  // Boost alpha near cursor
+  alpha = min(alpha + cursorInfluence * 0.35, 1.0);
+
+  gl_FragColor = vec4(color, alpha);
+}
+`;
+
+class GhostGrass {
+  constructor(scene, options = {}) {
+    const count = options.count || 80000;
+    const area = options.area || 120;
+    const height = options.height || 0.7;
+    const swayRadius = options.swayRadius || 10.0;
+    const glowRadius = options.glowRadius || 14.0;
+
+    this.uniforms = {
+      uTime: { value: 0 },
+      uCursor: { value: new THREE.Vector3(0, -100, 0) },
+      uHeight: { value: height },
+      uSwayRadius: { value: swayRadius },
+      uGlowRadius: { value: glowRadius },
+    };
+
+    // Blade geometry: visible quad, translated so base is at y=0
+    const bladeWidth = 0.06;
+    const bladeHeight = 0.7;
+    const bladeGeo = new THREE.PlaneGeometry(bladeWidth, bladeHeight);
+    bladeGeo.translate(0, bladeHeight / 2, 0); // bottom at y=0
+
+    // Shader material
+    const mat = new THREE.ShaderMaterial({
+      uniforms: this.uniforms,
+      vertexShader: VERT,
+      fragmentShader: FRAG,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      side: THREE.DoubleSide,
+    });
+
+    // Create InstancedMesh
+    this.mesh = new THREE.InstancedMesh(bladeGeo, mat, count);
+
+    // Place each blade with random xz position and random Y rotation
+    const dummy = new THREE.Object3D();
+    for (let i = 0; i < count; i++) {
+      const x = (Math.random() - 0.5) * area;
+      const z = (Math.random() - 0.5) * area;
+
+      dummy.position.set(x, 0, z);
+      // Random Y rotation for billboard-like variety
+      dummy.rotation.set(0, Math.random() * Math.PI, 0);
+      dummy.updateMatrix();
+      this.mesh.setMatrixAt(i, dummy.matrix);
+    }
+    this.mesh.instanceMatrix.needsUpdate = true;
+
+    // Generous bounding sphere so frustum culling works
+    this.mesh.frustumCulled = false;
+
+    scene.add(this.mesh);
+  }
+
+  /**
+   * @param {number} time - elapsed time in seconds
+   * @param {THREE.Vector3|null} cursorPos - world-space cursor position (or null)
+   */
+  update(time, cursorPos) {
+    this.uniforms.uTime.value = time;
+    if (cursorPos) {
+      this.uniforms.uCursor.value.copy(cursorPos);
+    }
+  }
+
+  dispose() {
+    this.mesh.geometry.dispose();
+    this.mesh.material.dispose();
+    this.mesh.parent?.remove(this.mesh);
+  }
+}
+// ════════════════════════════════════════════════════════════════════
+
+
+// --- Studio state ---
+const params = {
+  count: 20000,
+  area: 60,
+  height: 0.7,
+  sway: 10,
+  glow: 14,
+  autoOrbit: true,
+};
+
+
+// --- Three.js scene + lighting ---
+const stageEl = document.getElementById('stage');
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+renderer.setPixelRatio(Math.min(2, devicePixelRatio));
+const { width: W0, height: H0 } = stageEl.getBoundingClientRect();
+renderer.setSize(W0, H0);
+renderer.setClearColor(0x04060a, 1); // near-black to match GhostGrass project
+stageEl.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0x04060a, 0.012);
+
+// Camera at a ~35 degree down view so blades are seen from the side, not top-down.
+const camera = new THREE.PerspectiveCamera(50, W0 / H0, 0.1, 400);
+camera.position.set(0, 14, 24);
+camera.lookAt(0, 0.5, 0);
+
+// Minimal ambient (the grass material is custom and computes its own color,
+// so this only matters if you add lit meshes to the studio later.)
+scene.add(new THREE.AmbientLight(0x202028, 0.6));
+
+
+// --- Dim ground plane for cursor raycasting ---
+// The project raycasts against the actual terrain mesh; here we use a
+// flat plane at y=0 (matching the studio's terrainY = 0). It's slightly
+// visible so the field has a floor.
+const groundGeo = new THREE.PlaneGeometry(400, 400);
+groundGeo.rotateX(-Math.PI / 2);
+const groundMat = new THREE.MeshBasicMaterial({
+  color: 0x080a0e, transparent: true, opacity: 0.85,
+});
+const groundMesh = new THREE.Mesh(groundGeo, groundMat);
+scene.add(groundMesh);
+
+
+// --- Build the grass field ---
+let grass = new GhostGrass(scene, {
+  count: params.count,
+  area: params.area,
+  height: params.height,
+  swayRadius: params.sway,
+  glowRadius: params.glow,
+});
+
+function rebuildGrass() {
+  grass.dispose();
+  grass = new GhostGrass(scene, {
+    count: params.count,
+    area: params.area,
+    height: params.height,
+    swayRadius: params.sway,
+    glowRadius: params.glow,
+  });
+}
+
+
+// --- Cursor raycasting against the ground (mirrors main.js wiring) ---
+const raycaster = new THREE.Raycaster();
+const mouseNDC = new THREE.Vector2();
+const cursorWorld = new THREE.Vector3();
+let cursorActive = false;
+
+function updateCursorFromEvent(e) {
+  const rect = renderer.domElement.getBoundingClientRect();
+  mouseNDC.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+  mouseNDC.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+
+  raycaster.setFromCamera(mouseNDC, camera);
+  const hits = raycaster.intersectObject(groundMesh);
+  if (hits.length > 0) {
+    cursorWorld.copy(hits[0].point);
+    cursorActive = true;
+  }
+}
+renderer.domElement.addEventListener('pointerleave', () => {
+  cursorActive = false;
+});
+
+
+// --- Camera: orbit + drag + wheel zoom ---
+let camYaw = 0.0, camPitch = 0.55, camDist = 28;
+let dragging = false, dragX = 0, dragY = 0;
+renderer.domElement.addEventListener('pointerdown', e => {
+  dragging = true; dragX = e.clientX; dragY = e.clientY;
+  renderer.domElement.setPointerCapture(e.pointerId);
+});
+renderer.domElement.addEventListener('pointermove', e => {
+  // Always update the cursor world point on move (so highlight follows mouse).
+  updateCursorFromEvent(e);
+
+  if (!dragging) return;
+  camYaw   -= (e.clientX - dragX) * 0.006;
+  camPitch  = Math.max(0.18, Math.min(1.30, camPitch - (e.clientY - dragY) * 0.004));
+  dragX = e.clientX; dragY = e.clientY;
+});
+renderer.domElement.addEventListener('pointerup',     () => { dragging = false; });
+renderer.domElement.addEventListener('pointercancel', () => { dragging = false; });
+renderer.domElement.addEventListener('wheel', e => {
+  e.preventDefault();
+  camDist = Math.max(8, Math.min(70, camDist + e.deltaY * 0.04));
+}, { passive: false });
+
+
+// --- UI wiring ---
+function bindSlider(id, key, fmt, onChange) {
+  const el = document.getElementById(id);
+  const lab = document.getElementById('v' + id[0].toUpperCase() + id.slice(1));
+  const update = () => {
+    params[key] = parseFloat(el.value);
+    lab.textContent = fmt(params[key]);
+    if (onChange) onChange();
+  };
+  el.addEventListener('input', update);
+  update();
+}
+
+bindSlider('count',  'count',  v => v.toFixed(0),    rebuildGrass);
+bindSlider('area',   'area',   v => v.toFixed(0),    rebuildGrass);
+bindSlider('height', 'height', v => v.toFixed(2),    () => { grass.uniforms.uHeight.value = params.height; });
+bindSlider('sway',   'sway',   v => v.toFixed(1),    () => { grass.uniforms.uSwayRadius.value = params.sway; });
+bindSlider('glow',   'glow',   v => v.toFixed(1),    () => { grass.uniforms.uGlowRadius.value = params.glow; });
+
+const autoOrbitEl = document.getElementById('autoOrbit');
+autoOrbitEl.addEventListener('change', () => { params.autoOrbit = autoOrbitEl.checked; });
+
+const readoutEl = document.getElementById('readout');
+
+
+// --- Frame loop (mirrors main.js: raycast cursor, then grass.update) ---
+let last = performance.now(), lastReadout = 0, fpsAvg = 60;
+function frame() {
+  requestAnimationFrame(frame);
+  const now = performance.now();
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  const t = now / 1000;
+
+  if (params.autoOrbit && !dragging) camYaw += dt * 0.10;
+
+  // Camera orbit around field center
+  const cy = Math.cos(camPitch), sy = Math.sin(camPitch);
+  camera.position.set(
+    Math.sin(camYaw) * camDist * cy,
+    Math.max(2, sy * camDist),
+    Math.cos(camYaw) * camDist * cy
+  );
+  camera.lookAt(0, 0.5, 0);
+
+  // Mirror main.js: pass world-space cursor into grass.update each frame.
+  grass.update(t, cursorActive ? cursorWorld : null);
+
+  renderer.render(scene, camera);
+
+  if (now - lastReadout > 160) {
+    lastReadout = now;
+    fpsAvg = fpsAvg * 0.9 + (1 / Math.max(0.001, dt)) * 0.1;
+    readoutEl.innerHTML =
+      `BLADES ${params.count}` +
+      ` <span class="sep">&middot;</span> CURSOR ${cursorActive ? 'on' : 'off'}` +
+      ` <span class="sep">&middot;</span> ${fpsAvg.toFixed(0)} FPS`;
+  }
+}
+frame();
+
+
+// --- Resize ---
+addEventListener('resize', () => {
+  const { width, height } = stageEl.getBoundingClientRect();
+  renderer.setSize(width, height);
+  camera.aspect = width / height;
+  camera.updateProjectionMatrix();
+});
+</script>
+
+</body>
+</html>

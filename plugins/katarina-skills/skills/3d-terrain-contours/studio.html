@@ -1,0 +1,861 @@
+<!--
+  3D Terrain · Contours Overlay Studio — Katarina Blind
+  ======================================================
+  Interactive demo for the 3d-terrain-contours Claude skill.
+
+  Two-mesh architecture: a deformed PlaneGeometry (terrain) plus a
+  LineSegments BufferGeometry (contour lines) floating just above it,
+  both driven by one shared FBM height field. Slow auto-rotation around
+  the world Y axis so the 3/4 view reads as 3D without orbit controls.
+
+  Self-contained — open with python3 -m http.server, or just file://.
+  Tokens inlined from data-mapping/shared/tokens.css (see comment).
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>3D Terrain · Contours · Studio</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+<script type="importmap">
+{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.162.0/build/three.module.js"}}
+</script>
+
+<style>
+/* === Inlined from data-mapping/shared/tokens.css ============================ */
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap');
+
+:root {
+  /* ─── Surfaces ─────────────────────────────────── */
+  --bg:            #0a0a0a;
+  --surface:       #ffffff;
+  --surface-muted: #f1f1ee;
+  --surface-dark:  #111214;
+  --border:        rgba(0, 0, 0, 0.06);
+  --border-dark:   rgba(255, 255, 255, 0.05);
+
+  /* ─── Text on light surfaces ───────────────────── */
+  --text:          #141414;
+  --text-muted:    rgba(20, 20, 20, 0.55);
+  --text-subtle:   rgba(20, 20, 20, 0.38);
+
+  /* ─── Text on dark surfaces ────────────────────── */
+  --text-inverse:        #f4f2ec;
+  --text-inverse-muted:  rgba(244, 242, 236, 0.55);
+  --text-inverse-subtle: rgba(244, 242, 236, 0.45);
+
+  /* ─── Accents (status / categorical) ───────────── */
+  --accent:        #10b981;
+  --accent-bg:     rgba(16, 185, 129, 0.12);
+  --amber:         #f59e0b;
+  --blue:          #3b82f6;
+  --red:           #ef4444;
+  --purple:        #8b5cf6;
+  --cyan:          #06b6d4;
+
+  /* ─── Radii ────────────────────────────────────── */
+  --radius:        clamp(18px, 2vw, 26px);
+  --radius-inner:  clamp(10px, 1.2vw, 16px);
+  --radius-pill:   999px;
+
+  /* ─── Typography ───────────────────────────────── */
+  --font: 'DM Sans', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-mono: 'DM Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --fs-hero:    clamp(28px, 3.5vw, 40px);
+  --fs-heading: 14px;
+  --fs-body:    12px;
+  --fs-small:   11px;
+  --fs-micro:   10px;
+  --fs-nano:    9px;
+
+  --fw-regular:  400;
+  --fw-medium:   500;
+  --fw-semibold: 600;
+  --fw-bold:     700;
+
+  /* ─── Motion ───────────────────────────────────── */
+  --ease:     cubic-bezier(0.4, 0, 0.2, 1);
+  --dur-fast: 0.18s;
+  --dur-base: 0.28s;
+
+  /* ─── Elevation ────────────────────────────────── */
+  --shadow: 0 1px 2px rgba(15, 18, 24, 0.04),
+            0 10px 28px rgba(15, 18, 24, 0.08);
+
+  /* ─── Outer spacing (fluid gutters) ────────────── */
+  --gutter: clamp(10px, 1.4vw, 18px);
+  --pad-y:  clamp(10px, 2vh, 24px);
+  --pad-x:  clamp(10px, 2vw, 24px);
+}
+
+/* ─── Global reset (minimal) ─────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  -webkit-font-smoothing: antialiased;
+}
+/* === End inlined tokens.css ================================================ */
+
+
+/* ─── Studio layout ───────────────────────────────── */
+body { height: 100vh; overflow: hidden; display: flex;
+  gap: var(--gutter); padding: var(--pad-y) var(--pad-x); }
+
+.col-main { flex: 1; display: flex; flex-direction: column;
+  gap: var(--gutter); min-width: 0; }
+
+.header { flex: 0 0 auto; display: flex; align-items: baseline;
+  justify-content: space-between; padding: 0 4px; gap: 12px; }
+.h-left { display: flex; align-items: baseline; gap: 12px; }
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: var(--fs-nano);
+  font-weight: var(--fw-medium);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-inverse);
+  background: rgba(244, 242, 236, 0.08);
+  padding: 4px 10px;
+  border-radius: var(--radius-pill);
+  border: 1px solid rgba(244, 242, 236, 0.10);
+}
+.h-title { font-size: var(--fs-heading); font-weight: var(--fw-semibold);
+  color: var(--text-inverse-subtle); letter-spacing: -0.01em; }
+.h-byline { font-size: var(--fs-nano); color: var(--text-inverse-subtle);
+  font-weight: var(--fw-regular); letter-spacing: 0.06em;
+  text-transform: uppercase; opacity: 0.6; }
+
+/* Main panel (light, holds canvas) */
+.main-panel { flex: 1 1 0; min-height: 0; position: relative;
+  background: var(--surface-muted); border-radius: var(--radius);
+  border: 1px solid var(--border); box-shadow: var(--shadow);
+  overflow: hidden; display: flex; flex-direction: column; }
+
+.stage { flex: 1 1 0; min-height: 0; position: relative;
+  background: #f1f1ee; display: flex; align-items: stretch;
+  justify-content: stretch; overflow: hidden; }
+.stage canvas { display: block; width: 100% !important;
+  height: 100% !important; }
+
+/* Floating overlay tags inside stage */
+.stage-tag { position: absolute; top: 14px; padding: 5px 12px;
+  font-size: var(--fs-nano); font-weight: var(--fw-semibold);
+  font-family: var(--font-mono); letter-spacing: 0.10em;
+  text-transform: uppercase; color: var(--text);
+  background: rgba(255, 255, 255, 0.72); backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(0,0,0,0.06);
+  border-radius: var(--radius-pill); z-index: 2; }
+.stage-tag.left  { left: 14px; }
+.stage-tag.right { right: 14px;
+  display: flex; align-items: center; gap: 6px; }
+.stage-tag .dot { width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+
+.legend { position: absolute; bottom: 14px; left: 14px;
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 12px; background: rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(0,0,0,0.06);
+  border-radius: var(--radius-pill); z-index: 2;
+  font-family: var(--font-mono); font-size: var(--fs-nano);
+  color: var(--text-muted); letter-spacing: 0.08em;
+  text-transform: uppercase; }
+.legend .grad { width: 80px; height: 6px; border-radius: 3px;
+  background: linear-gradient(to right,
+    #1a3a6e, #2e8fb8, #d4b27a, #ffffff); }
+
+
+/* ─── Sidebar (dark) ─────────────────────────────── */
+.sidebar { width: 320px; min-width: 320px; display: flex;
+  flex-direction: column; gap: var(--gutter); }
+
+.sb-card { background: var(--surface-dark); border-radius: var(--radius);
+  border: 1px solid var(--border-dark); box-shadow: var(--shadow);
+  padding: 20px 22px; color: var(--text-inverse); }
+.sb-card.scrollable { flex: 1 1 0; min-height: 0; overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.08) transparent; }
+.sb-card.scrollable::-webkit-scrollbar { width: 3px; }
+.sb-card.scrollable::-webkit-scrollbar-track { background: transparent; }
+.sb-card.scrollable::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.08); border-radius: 2px; }
+
+/* Live readout pill (top of sidebar) */
+.readout {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px; border-radius: var(--radius-pill);
+  background: rgba(244, 242, 236, 0.04);
+  border: 1px solid rgba(244, 242, 236, 0.08);
+  font-family: var(--font-mono); font-size: var(--fs-micro);
+  font-weight: var(--fw-medium); letter-spacing: 0.06em;
+  color: var(--text-inverse); text-transform: uppercase;
+  font-variant-numeric: tabular-nums;
+  margin-bottom: 22px;
+}
+.readout .dot { width: 7px; height: 7px; border-radius: 50%;
+  background: var(--accent); box-shadow: 0 0 10px var(--accent);
+  flex-shrink: 0; }
+.readout .stats { flex: 1; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.readout .sep { color: var(--text-inverse-subtle); margin: 0 4px; }
+
+/* Sidebar eyebrow headings */
+.sb-label { font-size: var(--fs-nano); font-weight: var(--fw-semibold);
+  letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--text-inverse-subtle); margin-bottom: 14px; }
+.sb-label:not(:first-of-type) { margin-top: 22px; }
+
+/* Slider rows */
+.ctrl { margin-bottom: 16px; }
+.ctrl:last-child { margin-bottom: 0; }
+.ctrl-head { display: flex; align-items: baseline;
+  justify-content: space-between; margin-bottom: 6px; }
+.ctrl-name { font-size: var(--fs-small); font-weight: var(--fw-medium);
+  color: var(--text-inverse); letter-spacing: -0.01em; }
+.ctrl-val {
+  font-family: var(--font-mono); font-size: var(--fs-micro);
+  font-weight: var(--fw-medium); color: var(--accent);
+  font-variant-numeric: tabular-nums; letter-spacing: 0.02em;
+  min-width: 40px; text-align: right;
+}
+.ctrl-desc { font-size: var(--fs-nano); color: var(--text-inverse-subtle);
+  margin-top: 4px; line-height: 1.5; letter-spacing: 0.02em; }
+
+/* Color input — flush, borderless, matches sidebar aesthetic */
+input[type="color"] {
+  -webkit-appearance: none; appearance: none;
+  width: 100%; height: 22px; padding: 0; margin: 0;
+  border: 1px solid rgba(244,242,236,0.10);
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+}
+input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
+input[type="color"]::-webkit-color-swatch {
+  border: none; border-radius: 3px;
+}
+input[type="color"]::-moz-color-swatch {
+  border: none; border-radius: 3px;
+}
+
+/* Range input — minimalist track + thumb */
+input[type="range"] {
+  -webkit-appearance: none; appearance: none;
+  width: 100%; height: 18px; background: transparent;
+  cursor: pointer; display: block;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 2px; background: rgba(244,242,236,0.10);
+  border-radius: 2px;
+}
+input[type="range"]::-moz-range-track {
+  height: 2px; background: rgba(244,242,236,0.10);
+  border-radius: 2px;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 12px; height: 12px; border-radius: 50%;
+  background: var(--accent); margin-top: -5px;
+  border: 2px solid var(--surface-dark);
+  box-shadow: 0 0 0 1px rgba(16,185,129,0.4);
+  transition: transform var(--dur-fast) var(--ease);
+}
+input[type="range"]::-moz-range-thumb {
+  width: 12px; height: 12px; border-radius: 50%;
+  background: var(--accent); border: 2px solid var(--surface-dark);
+  box-shadow: 0 0 0 1px rgba(16,185,129,0.4);
+  transition: transform var(--dur-fast) var(--ease);
+}
+input[type="range"]:hover::-webkit-slider-thumb { transform: scale(1.15); }
+input[type="range"]:hover::-moz-range-thumb { transform: scale(1.15); }
+
+/* Toggle rows (checkboxes styled as research-instrument switches) */
+.toggle { display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 0; cursor: pointer; user-select: none;
+  border-bottom: 1px solid rgba(255,255,255,0.04); }
+.toggle:last-child { border-bottom: none; }
+.toggle-name { font-size: var(--fs-small); font-weight: var(--fw-medium);
+  color: var(--text-inverse); letter-spacing: -0.01em; }
+.toggle input { display: none; }
+.toggle-sw {
+  position: relative; width: 28px; height: 16px;
+  background: rgba(244,242,236,0.10); border-radius: 999px;
+  transition: background var(--dur-fast) var(--ease);
+  flex-shrink: 0;
+}
+.toggle-sw::after {
+  content: ''; position: absolute;
+  top: 2px; left: 2px; width: 12px; height: 12px;
+  border-radius: 50%; background: var(--text-inverse-muted);
+  transition: transform var(--dur-fast) var(--ease),
+              background var(--dur-fast) var(--ease);
+}
+.toggle input:checked ~ .toggle-sw {
+  background: var(--accent-bg);
+  box-shadow: inset 0 0 0 1px rgba(16,185,129,0.35);
+}
+.toggle input:checked ~ .toggle-sw::after {
+  transform: translateX(12px);
+  background: var(--accent);
+  box-shadow: 0 0 6px rgba(16,185,129,0.6);
+}
+
+/* Footnote/detail block */
+.detail { font-size: var(--fs-nano); color: var(--text-inverse-muted);
+  line-height: 1.65; letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums; }
+.detail code {
+  font-family: var(--font-mono);
+  background: rgba(255,255,255,0.06); padding: 1px 5px;
+  border-radius: 3px; font-size: 9px; color: var(--text-inverse);
+}
+</style>
+</head>
+<body>
+
+<div class="col-main">
+  <div class="header">
+    <div class="h-left">
+      <span class="eyebrow">Studio · 04</span>
+      <span class="h-title">3D Terrain · Contours Overlay</span>
+    </div>
+    <div class="h-byline">Two-mesh FBM heightmap + iso-line lift</div>
+  </div>
+
+  <div class="main-panel">
+    <div class="stage" id="stage">
+      <div class="stage-tag left">PlaneGeometry + LineSegments · shared hCache</div>
+      <div class="stage-tag right"><span class="dot"></span>Auto-rotate</div>
+      <div class="legend">
+        <span>low</span>
+        <div class="grad"></div>
+        <span>high</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="sidebar">
+  <div class="sb-card scrollable">
+
+    <div class="readout">
+      <span class="dot"></span>
+      <span class="stats" id="readout">SEGS 60 <span class="sep">·</span> LINES 0 <span class="sep">·</span> 60 FPS</span>
+    </div>
+
+    <div class="sb-label">Mesh Resolution</div>
+
+    <div class="ctrl">
+      <div class="ctrl-head">
+        <span class="ctrl-name">Terrain segments</span>
+        <span class="ctrl-val" id="vSegs">60</span>
+      </div>
+      <input type="range" id="segs" min="20" max="120" step="10" value="60">
+      <div class="ctrl-desc">PlaneGeometry resolution. Sample count is <code>(N+1)²</code>.</div>
+    </div>
+
+    <div class="sb-label">Height Field</div>
+
+    <div class="ctrl">
+      <div class="ctrl-head">
+        <span class="ctrl-name">Height scale</span>
+        <span class="ctrl-val" id="vHeight">5.00</span>
+      </div>
+      <input type="range" id="height" min="0.5" max="8" step="0.1" value="5.0">
+      <div class="ctrl-desc">Vertical exaggeration of the displaced plane.</div>
+    </div>
+
+    <div class="ctrl">
+      <div class="ctrl-head">
+        <span class="ctrl-name">Noise scale</span>
+        <span class="ctrl-val" id="vNoise">2.20</span>
+      </div>
+      <input type="range" id="noise" min="0.5" max="4" step="0.05" value="2.2">
+      <div class="ctrl-desc">XY frequency multiplier into the FBM lattice.</div>
+    </div>
+
+    <div class="ctrl">
+      <div class="ctrl-head">
+        <span class="ctrl-name">FBM octaves</span>
+        <span class="ctrl-val" id="vOct">4</span>
+      </div>
+      <input type="range" id="oct" min="1" max="6" step="1" value="4">
+      <div class="ctrl-desc">Detail layers — each one halves amplitude, doubles frequency.</div>
+    </div>
+
+    <div class="sb-label">Contour Overlay</div>
+
+    <div class="ctrl">
+      <div class="ctrl-head">
+        <span class="ctrl-name">Iso levels</span>
+        <span class="ctrl-val" id="vLevels">8</span>
+      </div>
+      <input type="range" id="levels" min="3" max="15" step="1" value="8">
+      <div class="ctrl-desc">Number of horizontal slice planes through the field.</div>
+    </div>
+
+    <div class="ctrl">
+      <div class="ctrl-head">
+        <span class="ctrl-name">Contour lift</span>
+        <span class="ctrl-val" id="vLift">0.10</span>
+      </div>
+      <input type="range" id="lift" min="0.01" max="0.3" step="0.01" value="0.10">
+      <div class="ctrl-desc">World-space offset above the surface — drop to see z-fighting.</div>
+    </div>
+
+    <div class="ctrl">
+      <div class="ctrl-head">
+        <span class="ctrl-name">Contour color</span>
+        <span class="ctrl-val" id="vContourColor">#0EA5E9</span>
+      </div>
+      <input type="color" id="contourColor" value="#0ea5e9">
+      <div class="ctrl-desc">Overrides per-iso vertex colors — sets a single tint on the line material.</div>
+    </div>
+
+    <div class="ctrl">
+      <div class="ctrl-head">
+        <span class="ctrl-name">Contour opacity</span>
+        <span class="ctrl-val" id="vContourOpacity">1.00</span>
+      </div>
+      <input type="range" id="contourOpacity" min="0" max="1" step="0.05" value="1.0">
+      <div class="ctrl-desc">Line material alpha — drop to fade contours into the terrain.</div>
+    </div>
+
+    <div class="ctrl">
+      <div class="ctrl-head">
+        <span class="ctrl-name">Line weight</span>
+        <span class="ctrl-val" id="vLineWeight">1.5</span>
+      </div>
+      <input type="range" id="lineWeight" min="1" max="4" step="0.5" value="1.5">
+      <div class="ctrl-desc">WebGL caps line width to 1px on most browsers — slider sets <code>linewidth</code> but visual change may be limited.</div>
+    </div>
+
+    <div class="sb-label">Layers</div>
+
+    <label class="toggle">
+      <span class="toggle-name">Show terrain</span>
+      <input type="checkbox" id="showTerrain" checked>
+      <span class="toggle-sw"></span>
+    </label>
+
+    <label class="toggle">
+      <span class="toggle-name">Show contours</span>
+      <input type="checkbox" id="showContours" checked>
+      <span class="toggle-sw"></span>
+    </label>
+
+    <label class="toggle">
+      <span class="toggle-name">Auto-rotate</span>
+      <input type="checkbox" id="autoRotate" checked>
+      <span class="toggle-sw"></span>
+    </label>
+
+    <div class="sb-label">Notes</div>
+    <div class="detail">
+      One FBM height function, two meshes. The terrain pass writes
+      vertex positions and per-vertex colors into a <code>PlaneGeometry</code>
+      while caching heights into <code>hCache</code>. The contour pass
+      runs marching squares on that same cache for each iso level,
+      emitting <code>LineSegments</code> at <code>iso × HSCALE + lift</code>.
+      Line buffer is preallocated at <code>MAX_CSEGS = 24000</code>;
+      a cursor tracks fill, <code>setDrawRange</code> clips the rest.
+    </div>
+
+  </div>
+</div>
+
+
+<script type="module">
+import * as THREE from 'three';
+
+// ─── Studio state ──────────────────────────────────────────────
+const params = {
+  segs: 60,
+  height: 5.0,
+  noise: 2.2,
+  oct: 4,
+  levels: 8,
+  lift: 0.10,
+  showTerrain: true,
+  showContours: true,
+  autoRotate: true,
+};
+
+// ─── Wire up sliders ───────────────────────────────────────────
+function bindSlider(id, key, fmt) {
+  const slider = document.getElementById(id);
+  const label  = document.getElementById('v' + id[0].toUpperCase() + id.slice(1));
+  const update = () => {
+    const v = parseFloat(slider.value);
+    params[key] = v;
+    label.textContent = fmt(v);
+    if (id === 'segs') rebuildSegs();
+    rebuildField = true;
+  };
+  slider.addEventListener('input', update);
+  update();
+}
+
+function bindToggle(id, key) {
+  const cb = document.getElementById(id);
+  const update = () => {
+    params[key] = cb.checked;
+    if (id === 'showTerrain')  terrainMesh.visible = cb.checked;
+    if (id === 'showContours') contourLines.visible = cb.checked;
+  };
+  cb.addEventListener('change', update);
+}
+
+let rebuildField = true;
+const readoutEl = document.getElementById('readout');
+
+
+// ─── Perlin noise + FBM ────────────────────────────────────────
+const perm = new Uint8Array(512);
+{
+  const p = Array.from({ length: 256 }, (_, i) => i);
+  // deterministic seed shuffle
+  let s = 1337;
+  const rnd = () => { s = (s * 16807) % 2147483647; return s / 2147483647; };
+  for (let i = 255; i > 0; i--) {
+    const j = Math.floor(rnd() * (i + 1));
+    [p[i], p[j]] = [p[j], p[i]];
+  }
+  for (let i = 0; i < 512; i++) perm[i] = p[i & 255];
+}
+const fade = t => t * t * t * (t * (t * 6 - 15) + 10);
+const lerp = (a, b, t) => a + t * (b - a);
+const grad = (h, x, y) => ((h & 1) ? -x : x) + ((h & 2) ? -y : y);
+function noise2d(x, y) {
+  const X = Math.floor(x) & 255, Y = Math.floor(y) & 255;
+  const xf = x - Math.floor(x), yf = y - Math.floor(y);
+  const u = fade(xf), v = fade(yf);
+  return lerp(
+    lerp(grad(perm[perm[X] + Y],     xf,     yf),
+         grad(perm[perm[X + 1] + Y], xf - 1, yf), u),
+    lerp(grad(perm[perm[X] + Y + 1],     xf,     yf - 1),
+         grad(perm[perm[X + 1] + Y + 1], xf - 1, yf - 1), u),
+    v
+  );
+}
+function fbm(x, y, octaves) {
+  let v = 0, a = 0.5, f = 1;
+  for (let i = 0; i < octaves; i++) {
+    v += a * noise2d(x * f, y * f);
+    a *= 0.5;
+    f *= 2;
+  }
+  return v * 0.5 + 0.5;
+}
+
+
+// ─── Color ramp: dark blue → cyan → tan → white ────────────────
+const STOPS = [
+  [0.00, [0.10, 0.18, 0.40]],   // deep blue
+  [0.40, [0.18, 0.56, 0.72]],   // cyan
+  [0.72, [0.83, 0.70, 0.48]],   // tan
+  [1.00, [0.98, 0.98, 0.96]],   // snow
+];
+function rampColor(v, out) {
+  v = Math.max(0, Math.min(1, v));
+  for (let i = 1; i < STOPS.length; i++) {
+    if (v <= STOPS[i][0]) {
+      const [t0, c0] = STOPS[i - 1], [t1, c1] = STOPS[i];
+      const t = (v - t0) / (t1 - t0);
+      out[0] = c0[0] + (c1[0] - c0[0]) * t;
+      out[1] = c0[1] + (c1[1] - c0[1]) * t;
+      out[2] = c0[2] + (c1[2] - c0[2]) * t;
+      return;
+    }
+  }
+  out[0] = STOPS[STOPS.length - 1][1][0];
+  out[1] = STOPS[STOPS.length - 1][1][1];
+  out[2] = STOPS[STOPS.length - 1][1][2];
+}
+
+
+// ─── Three.js scene ────────────────────────────────────────────
+const stageEl = document.getElementById('stage');
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setClearColor(0xf1f1ee, 1);
+stageEl.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xf1f1ee);
+scene.fog = new THREE.Fog(0xf1f1ee, 60, 130);
+
+const cam = new THREE.PerspectiveCamera(50, 1, 0.5, 300);
+// 3/4 angle camera
+cam.position.set(36, 30, 40);
+cam.lookAt(0, 2, 0);
+
+scene.add(new THREE.AmbientLight(0xffffff, 0.65));
+const dl = new THREE.DirectionalLight(0xffffff, 0.85);
+dl.position.set(10, 22, 8);
+scene.add(dl);
+const fillLight = new THREE.DirectionalLight(0xb8c8ff, 0.25);
+fillLight.position.set(-10, 8, -6);
+scene.add(fillLight);
+
+// Pivot group so auto-rotate spins terrain + contours together
+const pivot = new THREE.Group();
+scene.add(pivot);
+
+// World constants
+const WORLD = 50;
+const MAX_CSEGS = 24000;
+
+// Terrain mesh + height cache (resized on segs change)
+let terrainGeo, terrainMesh, hCache;
+const terrainMat = new THREE.MeshStandardMaterial({
+  vertexColors: true, roughness: 0.92, metalness: 0.0, flatShading: true,
+});
+
+// Contour mesh — buffers preallocated at MAX_CSEGS
+const cPos = new Float32Array(MAX_CSEGS * 6);
+const cCol = new Float32Array(MAX_CSEGS * 6);
+const contourGeo = new THREE.BufferGeometry();
+contourGeo.setAttribute('position', new THREE.BufferAttribute(cPos, 3));
+contourGeo.setAttribute('color',    new THREE.BufferAttribute(cCol, 3));
+contourGeo.setDrawRange(0, 0);
+const contourMat = new THREE.LineBasicMaterial({
+  vertexColors: false, fog: false, transparent: true, opacity: 1.0,
+  color: 0x0ea5e9, linewidth: 1.5,
+});
+const contourLines = new THREE.LineSegments(contourGeo, contourMat);
+contourLines.frustumCulled = false;
+contourLines.renderOrder = 1;
+pivot.add(contourLines);
+
+function rebuildSegs() {
+  const SEGS = params.segs | 0;
+  if (terrainMesh) {
+    pivot.remove(terrainMesh);
+    terrainGeo.dispose();
+  }
+  terrainGeo = new THREE.PlaneGeometry(WORLD, WORLD, SEGS, SEGS);
+  terrainGeo.rotateX(-Math.PI / 2);
+  const colArr = new Float32Array((SEGS + 1) * (SEGS + 1) * 3);
+  terrainGeo.setAttribute('color', new THREE.BufferAttribute(colArr, 3));
+  terrainMesh = new THREE.Mesh(terrainGeo, terrainMat);
+  terrainMesh.visible = params.showTerrain;
+  pivot.add(terrainMesh);
+  hCache = new Float32Array((SEGS + 1) * (SEGS + 1));
+}
+
+
+// ─── Marching squares (3D edition: emits world-space line segs) ─
+const MS = [
+  [], [[2,3]], [[1,2]], [[1,3]],
+  [[0,1]], [[0,3],[1,2]], [[0,2]], [[0,3]],
+  [[0,3]], [[0,2]], [[0,1],[2,3]], [[0,1]],
+  [[1,3]], [[1,2]], [[2,3]], []
+];
+function marchingSquares(field, N, iso, visit) {
+  const stride = N + 1;
+  for (let r = 0; r < N; r++) {
+    for (let c = 0; c < N; c++) {
+      const i = r * stride + c;
+      const v00 = field[i],          v10 = field[i + 1];
+      const v01 = field[i + stride], v11 = field[i + stride + 1];
+      const b = (v00 >= iso ? 8 : 0) | (v10 >= iso ? 4 : 0) |
+                (v11 >= iso ? 2 : 0) | (v01 >= iso ? 1 : 0);
+      if (b === 0 || b === 15) continue;
+      const dT = v10 - v00, dR = v11 - v10, dB = v11 - v01, dL = v01 - v00;
+      const tT = Math.abs(dT) < 1e-6 ? 0.5 : (iso - v00) / dT;
+      const tR = Math.abs(dR) < 1e-6 ? 0.5 : (iso - v10) / dR;
+      const tB = Math.abs(dB) < 1e-6 ? 0.5 : (iso - v01) / dB;
+      const tL = Math.abs(dL) < 1e-6 ? 0.5 : (iso - v00) / dL;
+      const ex = [c + tT, c + 1, c + tB, c];
+      const ey = [r,      r + tR, r + 1, r + tL];
+      for (const [e0, e1] of MS[b]) visit(ex[e0], ey[e0], ex[e1], ey[e1]);
+    }
+  }
+}
+
+
+// ─── Field rebuild — terrain mesh + contour lines from one cache
+const tmpC = [0, 0, 0];
+let lastSegCount = 0;
+let drift = 0;
+
+function rebuild() {
+  const SEGS = params.segs | 0;
+  const HSCALE = params.height;
+  const NS = params.noise;
+  const OCT = params.oct | 0;
+  const LIFT = params.lift;
+  const LEVELS = params.levels | 0;
+
+  // 1. Terrain pass — write positions + colors, fill hCache  ────
+  const pos = terrainGeo.attributes.position;
+  const col = terrainGeo.attributes.color;
+  const N1 = SEGS + 1;
+  for (let j = 0; j < N1; j++) {
+    for (let i = 0; i < N1; i++) {
+      const vIdx = j * N1 + i;
+      const nx = i / SEGS, ny = j / SEGS;
+      // small drift makes the surface feel alive without changing on every slider tick
+      const v = fbm(nx * NS + drift, ny * NS + drift * 0.6, OCT);
+      hCache[vIdx] = v;
+      pos.setXYZ(vIdx,
+        (nx - 0.5) * WORLD,
+        v * HSCALE,
+        (ny - 0.5) * WORLD);
+      rampColor(v, tmpC);
+      col.setXYZ(vIdx, tmpC[0], tmpC[1], tmpC[2]);
+    }
+  }
+  pos.needsUpdate = true;
+  col.needsUpdate = true;
+  terrainGeo.computeVertexNormals();
+
+  // 2. Contour pass — marching squares per iso, write into preallocated buffer
+  let segIdx = 0;
+  // iso values spread across the noise output range [0.18, 0.85]
+  for (let lv = 0; lv < LEVELS; lv++) {
+    if (segIdx >= MAX_CSEGS - 4) break;
+    const t = LEVELS === 1 ? 0.5 : lv / (LEVELS - 1);
+    const iso = 0.20 + t * 0.65;
+    const wy = iso * HSCALE + LIFT;
+
+    // line color: deeper iso → cool, higher → warm/white (subtle, high contrast vs terrain)
+    let cr, cg, cb;
+    if (t < 0.5) {
+      const k = t * 2;
+      cr = 0.05 + k * 0.10; cg = 0.10 + k * 0.15; cb = 0.18 + k * 0.10;
+    } else {
+      const k = (t - 0.5) * 2;
+      cr = 0.15 + k * 0.10; cg = 0.25 + k * 0.05; cb = 0.28 - k * 0.10;
+    }
+
+    marchingSquares(hCache, SEGS, iso, (x0, y0, x1, y1) => {
+      if (segIdx >= MAX_CSEGS - 1) return;
+      const base = segIdx * 6;
+      cPos[base]     = (x0 / SEGS - 0.5) * WORLD;
+      cPos[base + 1] = wy;
+      cPos[base + 2] = (y0 / SEGS - 0.5) * WORLD;
+      cPos[base + 3] = (x1 / SEGS - 0.5) * WORLD;
+      cPos[base + 4] = wy;
+      cPos[base + 5] = (y1 / SEGS - 0.5) * WORLD;
+      cCol[base]     = cr; cCol[base + 1] = cg; cCol[base + 2] = cb;
+      cCol[base + 3] = cr; cCol[base + 4] = cg; cCol[base + 5] = cb;
+      segIdx++;
+    });
+  }
+  contourGeo.setDrawRange(0, segIdx * 2);
+  contourGeo.attributes.position.needsUpdate = true;
+  contourGeo.attributes.color.needsUpdate = true;
+  lastSegCount = segIdx;
+}
+
+
+// ─── Resize handler ────────────────────────────────────────────
+function fitRenderer() {
+  const { width, height } = stageEl.getBoundingClientRect();
+  renderer.setSize(width, height, false);
+  cam.aspect = width / height;
+  cam.updateProjectionMatrix();
+}
+window.addEventListener('resize', fitRenderer);
+
+
+// ─── Wire UI, build initial mesh, start render loop ────────────
+rebuildSegs();
+
+bindSlider('segs',   'segs',   v => v.toFixed(0));
+bindSlider('height', 'height', v => v.toFixed(2));
+bindSlider('noise',  'noise',  v => v.toFixed(2));
+bindSlider('oct',    'oct',    v => v.toFixed(0));
+bindSlider('levels', 'levels', v => v.toFixed(0));
+bindSlider('lift',   'lift',   v => v.toFixed(2));
+
+bindToggle('showTerrain',  'showTerrain');
+bindToggle('showContours', 'showContours');
+bindToggle('autoRotate',   'autoRotate');
+
+// Contour color / opacity / line-weight — direct material plumbing,
+// no field rebuild needed (purely material state).
+const contourColorEl   = document.getElementById('contourColor');
+const contourColorVal  = document.getElementById('vContourColor');
+const contourOpacityEl = document.getElementById('contourOpacity');
+const contourOpacityVal = document.getElementById('vContourOpacity');
+const lineWeightEl     = document.getElementById('lineWeight');
+const lineWeightVal    = document.getElementById('vLineWeight');
+
+function applyContourColor() {
+  const hex = contourColorEl.value;
+  contourMat.color.set(hex);
+  contourMat.needsUpdate = true;
+  contourColorVal.textContent = hex.toUpperCase();
+}
+function applyContourOpacity() {
+  const v = parseFloat(contourOpacityEl.value);
+  contourMat.opacity = v;
+  contourMat.transparent = true;
+  contourOpacityVal.textContent = v.toFixed(2);
+}
+function applyLineWeight() {
+  const v = parseFloat(lineWeightEl.value);
+  contourMat.linewidth = v;
+  contourMat.needsUpdate = true;
+  lineWeightVal.textContent = v.toFixed(1) + ' px*';
+}
+contourColorEl.addEventListener('input', applyContourColor);
+contourOpacityEl.addEventListener('input', applyContourOpacity);
+lineWeightEl.addEventListener('input', applyLineWeight);
+applyContourColor();
+applyContourOpacity();
+applyLineWeight();
+
+fitRenderer();
+
+let lastFrame = performance.now();
+let fps = 60;
+let lastReadout = 0;
+
+function animate(now) {
+  const dt = Math.min(0.05, (now - lastFrame) / 1000);
+  lastFrame = now;
+  fps = fps * 0.92 + (1 / Math.max(0.001, dt)) * 0.08;
+
+  // Slow drift in the noise origin so the field is visibly alive
+  drift += dt * 0.04;
+  rebuildField = true;
+
+  if (rebuildField) {
+    rebuild();
+    rebuildField = false;
+  }
+
+  if (params.autoRotate) pivot.rotation.y += dt * 0.18;
+
+  renderer.render(scene, cam);
+
+  if (now - lastReadout > 160) {
+    lastReadout = now;
+    readoutEl.innerHTML =
+      `SEGS ${params.segs | 0}` +
+      ` <span class="sep">·</span> ` +
+      `LINES ${lastSegCount}` +
+      ` <span class="sep">·</span> ` +
+      `${fps.toFixed(0)} FPS`;
+  }
+  requestAnimationFrame(animate);
+}
+requestAnimationFrame(animate);
+</script>
+
+</body>
+</html>

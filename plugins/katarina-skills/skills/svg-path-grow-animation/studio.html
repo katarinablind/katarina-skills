@@ -1,0 +1,741 @@
+<!--
+  SVG Path Grow · Vine Animation — Studio
+  =======================================
+  Interactive demo for the svg-path-grow-animation Claude skill.
+
+  Renders a field of vines that draw themselves via the
+  stroke-dasharray + stroke-dashoffset technique, lifted directly from
+  alpine-flowers/viz/bloom-timeline.html. Each vine is a Catmull-Rom
+  spline through randomly-jittered control points; per-vine duration,
+  delay, and per-frame jitter come from a deterministic seed so the
+  same vine grows the same way every time.
+
+  Self-contained — open with python3 -m http.server, or just file://.
+  Tokens inlined from data-mapping/shared/tokens.css (see comment).
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SVG Path Grow · Vine Animation · Studio</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+<style>
+/* === Inlined from data-mapping/shared/tokens.css ============================ */
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap');
+
+:root {
+  /* ─── Surfaces ─────────────────────────────────── */
+  --bg:            #0a0a0a;
+  --surface:       #ffffff;
+  --surface-muted: #f1f1ee;
+  --surface-dark:  #111214;
+  --border:        rgba(0, 0, 0, 0.06);
+  --border-dark:   rgba(255, 255, 255, 0.05);
+
+  /* ─── Text on light surfaces ───────────────────── */
+  --text:          #141414;
+  --text-muted:    rgba(20, 20, 20, 0.55);
+  --text-subtle:   rgba(20, 20, 20, 0.38);
+
+  /* ─── Text on dark surfaces ────────────────────── */
+  --text-inverse:        #f4f2ec;
+  --text-inverse-muted:  rgba(244, 242, 236, 0.55);
+  --text-inverse-subtle: rgba(244, 242, 236, 0.45);
+
+  /* ─── Accents ──────────────────────────────────── */
+  --accent:        #10b981;
+  --accent-bg:     rgba(16, 185, 129, 0.12);
+  --amber:         #f59e0b;
+  --blue:          #3b82f6;
+  --red:           #ef4444;
+  --purple:        #8b5cf6;
+  --cyan:          #06b6d4;
+
+  /* ─── Radii ────────────────────────────────────── */
+  --radius:        clamp(18px, 2vw, 26px);
+  --radius-inner:  clamp(10px, 1.2vw, 16px);
+  --radius-pill:   999px;
+
+  /* ─── Typography ───────────────────────────────── */
+  --font: 'DM Sans', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-mono: 'DM Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --fs-hero:    clamp(28px, 3.5vw, 40px);
+  --fs-heading: 14px;
+  --fs-body:    12px;
+  --fs-small:   11px;
+  --fs-micro:   10px;
+  --fs-nano:    9px;
+
+  --fw-regular:  400;
+  --fw-medium:   500;
+  --fw-semibold: 600;
+  --fw-bold:     700;
+
+  /* ─── Motion ───────────────────────────────────── */
+  --ease:     cubic-bezier(0.4, 0, 0.2, 1);
+  --dur-fast: 0.18s;
+  --dur-base: 0.28s;
+
+  /* ─── Elevation ────────────────────────────────── */
+  --shadow: 0 1px 2px rgba(15, 18, 24, 0.04),
+            0 10px 28px rgba(15, 18, 24, 0.08);
+
+  /* ─── Outer spacing (fluid gutters) ────────────── */
+  --gutter: clamp(10px, 1.4vw, 18px);
+  --pad-y:  clamp(10px, 2vh, 24px);
+  --pad-x:  clamp(10px, 2vw, 24px);
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  -webkit-font-smoothing: antialiased;
+}
+/* === End inlined tokens.css ================================================ */
+
+
+/* ─── Studio layout ───────────────────────────────── */
+body { height: 100vh; overflow: hidden; display: flex;
+  gap: var(--gutter); padding: var(--pad-y) var(--pad-x); }
+
+.col-main { flex: 1; display: flex; flex-direction: column;
+  gap: var(--gutter); min-width: 0; }
+
+.header { flex: 0 0 auto; display: flex; align-items: baseline;
+  justify-content: space-between; padding: 0 4px; gap: 12px; }
+.h-left { display: flex; align-items: baseline; gap: 12px; }
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: var(--fs-nano);
+  font-weight: var(--fw-medium);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-inverse);
+  background: rgba(244, 242, 236, 0.08);
+  padding: 4px 10px;
+  border-radius: var(--radius-pill);
+  border: 1px solid rgba(244, 242, 236, 0.10);
+}
+.h-title { font-size: var(--fs-heading); font-weight: var(--fw-semibold);
+  color: var(--text-inverse-subtle); letter-spacing: -0.01em; }
+.h-byline { font-size: var(--fs-nano); color: var(--text-inverse-subtle);
+  font-weight: var(--fw-regular); letter-spacing: 0.06em;
+  text-transform: uppercase; opacity: 0.6; }
+
+/* Main panel (light, holds SVG stage) */
+.main-panel { flex: 1 1 0; min-height: 0; position: relative;
+  background: var(--surface-muted); border-radius: var(--radius);
+  border: 1px solid var(--border); box-shadow: var(--shadow);
+  overflow: hidden; display: flex; flex-direction: column; }
+
+.stage { flex: 1 1 0; min-height: 0; position: relative;
+  background: linear-gradient(180deg, #0d1410 0%, #1a2418 100%);
+  display: flex; align-items: stretch;
+  justify-content: stretch; overflow: hidden; cursor: pointer; }
+.stage svg { display: block; width: 100%; height: 100%; }
+
+/* Floating overlay tags inside stage */
+.stage-tag { position: absolute; top: 14px; padding: 5px 12px;
+  font-size: var(--fs-nano); font-weight: var(--fw-semibold);
+  font-family: var(--font-mono); letter-spacing: 0.10em;
+  text-transform: uppercase; color: var(--text-inverse);
+  background: rgba(20, 20, 24, 0.55); backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: var(--radius-pill); z-index: 2; pointer-events: none; }
+.stage-tag.left  { left: 14px; }
+.stage-tag.right { right: 14px;
+  display: flex; align-items: center; gap: 6px; }
+.stage-tag .dot { width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+
+.legend { position: absolute; bottom: 14px; left: 14px;
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 12px; background: rgba(20,20,24,0.55);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: var(--radius-pill); z-index: 2;
+  font-family: var(--font-mono); font-size: var(--fs-nano);
+  color: var(--text-inverse-muted); letter-spacing: 0.08em;
+  text-transform: uppercase; pointer-events: none; }
+
+
+/* ─── Sidebar (dark) ─────────────────────────────── */
+.sidebar { width: 320px; min-width: 320px; display: flex;
+  flex-direction: column; gap: var(--gutter); }
+
+.sb-card { background: var(--surface-dark); border-radius: var(--radius);
+  border: 1px solid var(--border-dark); box-shadow: var(--shadow);
+  padding: 20px 22px; color: var(--text-inverse); }
+.sb-card.scrollable { flex: 1 1 0; min-height: 0; overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.08) transparent; }
+.sb-card.scrollable::-webkit-scrollbar { width: 3px; }
+.sb-card.scrollable::-webkit-scrollbar-track { background: transparent; }
+.sb-card.scrollable::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.08); border-radius: 2px; }
+
+/* Live readout pill */
+.readout {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px; border-radius: var(--radius-pill);
+  background: rgba(244, 242, 236, 0.04);
+  border: 1px solid rgba(244, 242, 236, 0.08);
+  font-family: var(--font-mono); font-size: var(--fs-micro);
+  font-weight: var(--fw-medium); letter-spacing: 0.06em;
+  color: var(--text-inverse); text-transform: uppercase;
+  font-variant-numeric: tabular-nums;
+  margin-bottom: 22px;
+}
+.readout .dot { width: 7px; height: 7px; border-radius: 50%;
+  background: var(--accent); box-shadow: 0 0 10px var(--accent);
+  flex-shrink: 0; }
+.readout .stats { flex: 1; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.readout .sep { color: var(--text-inverse-subtle); margin: 0 4px; }
+
+/* Sidebar eyebrow headings */
+.sb-label { font-size: var(--fs-nano); font-weight: var(--fw-semibold);
+  letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--text-inverse-subtle); margin-bottom: 14px; }
+.sb-label:not(:first-of-type) { margin-top: 22px; }
+
+/* Slider rows */
+.ctrl { margin-bottom: 16px; }
+.ctrl:last-child { margin-bottom: 0; }
+.ctrl-head { display: flex; align-items: baseline;
+  justify-content: space-between; margin-bottom: 6px; }
+.ctrl-name { font-size: var(--fs-small); font-weight: var(--fw-medium);
+  color: var(--text-inverse); letter-spacing: -0.01em; }
+.ctrl-val {
+  font-family: var(--font-mono); font-size: var(--fs-micro);
+  font-weight: var(--fw-medium); color: var(--accent);
+  font-variant-numeric: tabular-nums; letter-spacing: 0.02em;
+  min-width: 40px; text-align: right;
+}
+.ctrl-desc { font-size: var(--fs-nano); color: var(--text-inverse-subtle);
+  margin-top: 4px; line-height: 1.5; letter-spacing: 0.02em; }
+
+/* Range input */
+input[type="range"] {
+  -webkit-appearance: none; appearance: none;
+  width: 100%; height: 18px; background: transparent;
+  cursor: pointer; display: block;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 2px; background: rgba(244,242,236,0.10);
+  border-radius: 2px;
+}
+input[type="range"]::-moz-range-track {
+  height: 2px; background: rgba(244,242,236,0.10);
+  border-radius: 2px;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 12px; height: 12px; border-radius: 50%;
+  background: var(--accent); margin-top: -5px;
+  border: 2px solid var(--surface-dark);
+  box-shadow: 0 0 0 1px rgba(16,185,129,0.4);
+  transition: transform var(--dur-fast) var(--ease);
+}
+input[type="range"]::-moz-range-thumb {
+  width: 12px; height: 12px; border-radius: 50%;
+  background: var(--accent); border: 2px solid var(--surface-dark);
+  box-shadow: 0 0 0 1px rgba(16,185,129,0.4);
+  transition: transform var(--dur-fast) var(--ease);
+}
+input[type="range"]:hover::-webkit-slider-thumb { transform: scale(1.15); }
+input[type="range"]:hover::-moz-range-thumb { transform: scale(1.15); }
+
+/* Select + color input */
+select, input[type="color"] {
+  width: 100%; padding: 8px 10px;
+  background: rgba(244,242,236,0.04);
+  border: 1px solid rgba(244,242,236,0.08);
+  border-radius: 6px;
+  color: var(--text-inverse); font-family: var(--font-mono);
+  font-size: var(--fs-small); cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease);
+}
+select:hover, input[type="color"]:hover { border-color: rgba(244,242,236,0.2); }
+input[type="color"] { height: 36px; padding: 4px; }
+
+/* Re-grow button */
+.btn {
+  width: 100%; padding: 10px 14px;
+  background: var(--accent-bg); color: var(--accent);
+  border: 1px solid rgba(16,185,129,0.3);
+  border-radius: var(--radius-pill);
+  font-family: var(--font-mono); font-size: var(--fs-small);
+  font-weight: var(--fw-medium); letter-spacing: 0.08em;
+  text-transform: uppercase; cursor: pointer;
+  transition: background var(--dur-fast) var(--ease);
+}
+.btn:hover { background: rgba(16,185,129,0.2); }
+.btn:active { transform: scale(0.98); }
+
+/* Footnote */
+.detail { font-size: var(--fs-nano); color: var(--text-inverse-muted);
+  line-height: 1.65; letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums; }
+.detail code {
+  font-family: var(--font-mono);
+  background: rgba(255,255,255,0.06); padding: 1px 5px;
+  border-radius: 3px; font-size: 9px; color: var(--text-inverse);
+}
+
+/* The growth animation primitive — lifted from
+   alpine-flowers/viz/bloom-timeline.html ~line 197-204 */
+.vine-stem {
+  fill: none;
+  stroke-linecap: round;
+  /* dasharray/dashoffset/transition set per-element from JS */
+}
+</style>
+</head>
+<body>
+
+<div class="col-main">
+  <div class="header">
+    <div class="h-left">
+      <span class="eyebrow">Studio · 12</span>
+      <span class="h-title">SVG Path Grow · Vine Animation</span>
+    </div>
+    <div class="h-byline">stroke-dashoffset path-draw</div>
+  </div>
+
+  <div class="main-panel">
+    <div class="stage" id="stage">
+      <div class="stage-tag left">Catmull-Rom · stroke-dashoffset</div>
+      <div class="stage-tag right"><span class="dot"></span>Click / hover to re-grow</div>
+      <div class="legend">root → tip · per-vine seeded jitter</div>
+      <svg id="stageSvg" preserveAspectRatio="xMidYMax meet"></svg>
+    </div>
+  </div>
+</div>
+
+<div class="sidebar">
+  <div class="sb-card scrollable">
+
+    <div class="readout">
+      <span class="dot"></span>
+      <span class="stats" id="readout">VINES 8 <span class="sep">·</span> DUR 1200ms <span class="sep">·</span> JITTER 0.30 <span class="sep">·</span> 60 FPS</span>
+    </div>
+
+    <div class="sb-label">Field</div>
+
+    <div class="ctrl">
+      <div class="ctrl-head">
+        <span class="ctrl-name">Number of vines</span>
+        <span class="ctrl-val" id="vNumVines">8</span>
+      </div>
+      <input type="range" id="numVines" min="1" max="20" step="1" value="8">
+    </div>
+
+    <div class="ctrl">
+      <div class="ctrl-head">
+        <span class="ctrl-name">Stroke width</span>
+        <span class="ctrl-val" id="vStrokeW">2.5</span>
+      </div>
+      <input type="range" id="strokeW" min="1" max="6" step="0.1" value="2.5">
+    </div>
+
+    <div class="ctrl">
+      <div class="ctrl-head">
+        <span class="ctrl-name">Vine color</span>
+      </div>
+      <input type="color" id="vineColor" value="#5a8a50">
+      <div class="ctrl-desc">Bloom-timeline grass green: <code>#5a8a50</code>.</div>
+    </div>
+
+    <div class="sb-label">Timing</div>
+
+    <div class="ctrl">
+      <div class="ctrl-head">
+        <span class="ctrl-name">Base duration</span>
+        <span class="ctrl-val" id="vBaseDur">1200</span>
+      </div>
+      <input type="range" id="baseDur" min="200" max="3000" step="50" value="1200">
+      <div class="ctrl-desc">CSS <code>transition-duration</code> for the dashoffset → 0 sweep.</div>
+    </div>
+
+    <div class="ctrl">
+      <div class="ctrl-head">
+        <span class="ctrl-name">Per-path jitter</span>
+        <span class="ctrl-val" id="vJitter">0.30</span>
+      </div>
+      <input type="range" id="jitter" min="0" max="1" step="0.01" value="0.3">
+      <div class="ctrl-desc">±30%·jitter on duration; widens the random delay too.</div>
+    </div>
+
+    <div class="ctrl">
+      <div class="ctrl-head">
+        <span class="ctrl-name">Stagger delay</span>
+        <span class="ctrl-val" id="vStagger">60</span>
+      </div>
+      <input type="range" id="stagger" min="0" max="500" step="5" value="60">
+      <div class="ctrl-desc">Linear ramp between successive vine starts.</div>
+    </div>
+
+    <div class="ctrl">
+      <div class="ctrl-head">
+        <span class="ctrl-name">Easing</span>
+      </div>
+      <select id="easing">
+        <option value="linear">linear</option>
+        <option value="ease">ease</option>
+        <option value="ease-out">ease-out</option>
+        <option value="cubic-bezier(0.4, 0, 0.2, 1)" selected>cubic-bezier(.4, 0, .2, 1) — DM token</option>
+        <option value="cubic-bezier(0.16, 1, 0.3, 1)">cubic-bezier(.16, 1, .3, 1) — bloom</option>
+      </select>
+    </div>
+
+    <div class="sb-label">Trigger</div>
+
+    <div class="ctrl">
+      <div class="ctrl-head">
+        <span class="ctrl-name">Mode</span>
+      </div>
+      <select id="trigger">
+        <option value="click">On click</option>
+        <option value="hover" selected>On hover</option>
+        <option value="load">On load only</option>
+        <option value="loop">Continuous loop</option>
+      </select>
+    </div>
+
+    <div class="ctrl">
+      <button class="btn" id="regrow">Re-grow</button>
+    </div>
+
+    <div class="sb-label">Notes</div>
+    <div class="detail">
+      Each vine is built fresh on every trigger (bloom-timeline pattern):
+      old <code>&lt;g&gt;</code> removed, new paths appended with
+      <code>strokeDashoffset = length</code>, then a single
+      <code>requestAnimationFrame</code> later set to
+      <code>0</code> — the CSS transition does the rest. Per-vine
+      duration / delay / control-point jitter come from a deterministic
+      seed (LCG keyed by vine index), so the same vine grows the same
+      way every re-trigger. Geometry is a Catmull-Rom-style cubic Bezier
+      chain with horizontal sway oscillating along the height; tip marker
+      fades in at <code>delay + dur · 0.85</code>.
+    </div>
+
+  </div>
+</div>
+
+
+<script>
+// ════════════════════════════════════════════════════════════════════
+// === seededJitter, vinePath, growVines: vine-curve + path-draw
+// === pattern lifted from alpine-flowers/viz/bloom-timeline.html
+// === (lines ~197-204 for the .vine-stem CSS, ~686-791 for
+// === growGrassAlongLines + per-blade jitter, ~780-790 for the
+// === requestAnimationFrame two-step trigger).
+// ════════════════════════════════════════════════════════════════════
+
+const stage = document.getElementById('stage');
+const svg = document.getElementById('stageSvg');
+const readoutEl = document.getElementById('readout');
+
+// ─── Studio state — read on every grow() call ────────────────
+const params = {
+  numVines: 8,
+  baseDur: 1200,
+  jitter: 0.3,
+  stagger: 60,
+  strokeW: 2.5,
+  color: '#5a8a50',
+  easing: 'cubic-bezier(0.4, 0, 0.2, 1)',
+  trigger: 'hover',
+};
+
+// ─── Wire up sliders ─────────────────────────────────────────
+function bind(id, key, fmt, after) {
+  const slider = document.getElementById(id);
+  const labelId = 'v' + id[0].toUpperCase() + id.slice(1);
+  const label = document.getElementById(labelId);
+  const update = () => {
+    const v = isNaN(+slider.value) ? slider.value : parseFloat(slider.value);
+    params[key] = v;
+    if (label) label.textContent = fmt(v);
+    if (after) after(v);
+  };
+  slider.addEventListener('input', update);
+  update();
+}
+
+bind('numVines', 'numVines', v => v.toFixed(0));
+bind('baseDur',  'baseDur',  v => v.toFixed(0));
+bind('jitter',   'jitter',   v => v.toFixed(2));
+bind('stagger',  'stagger',  v => v.toFixed(0));
+bind('strokeW',  'strokeW',  v => v.toFixed(1));
+
+document.getElementById('vineColor').addEventListener('input', e => {
+  params.color = e.target.value;
+});
+document.getElementById('easing').addEventListener('change', e => {
+  params.easing = e.target.value;
+});
+document.getElementById('trigger').addEventListener('change', e => {
+  params.trigger = e.target.value;
+  rewireTrigger();
+});
+document.getElementById('regrow').addEventListener('click', () => grow());
+
+
+// ─── Deterministic LCG: same seed → same sequence ───────────
+// Lifted from bloom-timeline.html makeFlowerSVG (lines ~957-960):
+//   seed = species name char-code sum;
+//   rand = () => { seed = (seed * 16807 + 7) % 2147483647;
+//                  return (seed & 0xffff) / 0xffff; };
+function seededRand(seed) {
+  let s = (seed | 0) * 16807 + 7;
+  return () => {
+    s = (s * 16807 + 7) % 2147483647;
+    return (s & 0xffff) / 0xffff;
+  };
+}
+
+// ─── Vine geometry: Catmull-Rom-style cubic Bezier chain ─────
+// The bloom-timeline grass uses bladePath() (a closed teardrop);
+// here we want an OPEN curve so the stroke draws end-to-end.
+// Sway oscillates with height — gives the vine an organic curl.
+function vinePath(bx, by, h, swayAmp, swayDir, rand) {
+  const segs = 5;
+  let d = `M ${bx.toFixed(2)} ${by.toFixed(2)}`;
+  let x = bx, y = by;
+  for (let i = 1; i <= segs; i++) {
+    const t = i / segs;
+    // Sinusoidal sway with amplitude growing from 0 at root to peak mid-stem
+    const swayPhase = Math.sin(t * 3.2 + rand() * 0.4);
+    const sway = swayDir * swayAmp * swayPhase * (0.4 + t * 0.6);
+    const nx = bx + sway;
+    const ny = by - h * t;
+    // Cubic Bezier control points biased along the segment direction
+    const cp1x = x + (nx - x) * 0.35 + (rand() - 0.5) * swayAmp * 0.4;
+    const cp1y = y + (ny - y) * 0.45;
+    const cp2x = x + (nx - x) * 0.65 + (rand() - 0.5) * swayAmp * 0.4;
+    const cp2y = y + (ny - y) * 0.7;
+    d += ` C ${cp1x.toFixed(2)} ${cp1y.toFixed(2)},` +
+         ` ${cp2x.toFixed(2)} ${cp2y.toFixed(2)},` +
+         ` ${nx.toFixed(2)} ${ny.toFixed(2)}`;
+    x = nx; y = ny;
+  }
+  return { d, tipX: x, tipY: y };
+}
+
+// ─── Tiny leaf glyph at the tip — bloom-timeline pattern,
+//     a small ellipse cluster plus a center dot.
+function makeLeafGlyph(cx, cy, color, swayDir, rand) {
+  const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+  const numLeaves = 2 + Math.floor(rand() * 3);
+  for (let i = 0; i < numLeaves; i++) {
+    const a = (i / numLeaves) * Math.PI * 2 + rand() * 0.4;
+    const r = 4 + rand() * 4;
+    const lx = cx + Math.cos(a) * r * 0.5;
+    const ly = cy + Math.sin(a) * r * 0.5;
+    const leaf = document.createElementNS('http://www.w3.org/2000/svg', 'ellipse');
+    leaf.setAttribute('cx', lx.toFixed(2));
+    leaf.setAttribute('cy', ly.toFixed(2));
+    leaf.setAttribute('rx', (3 + rand() * 2).toFixed(2));
+    leaf.setAttribute('ry', (1.5 + rand() * 1).toFixed(2));
+    leaf.setAttribute('transform',
+      `rotate(${(a * 180 / Math.PI).toFixed(1)} ${lx.toFixed(2)} ${ly.toFixed(2)})`);
+    leaf.style.fill = color;
+    leaf.style.fillOpacity = '0.85';
+    g.appendChild(leaf);
+  }
+  // Bud tip
+  const bud = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+  bud.setAttribute('cx', cx.toFixed(2));
+  bud.setAttribute('cy', cy.toFixed(2));
+  bud.setAttribute('r', '2');
+  bud.style.fill = '#ffe066';
+  bud.style.fillOpacity = '0.8';
+  g.appendChild(bud);
+  return g;
+}
+
+// ════════════════════════════════════════════════════════════════════
+// growVines — counterpart to growGrassAlongLines(species) from
+// bloom-timeline.html (~line 686). Same lifecycle:
+//   1. clearVines()  — remove previous <g> (cf. clearGrass())
+//   2. build new SVG group with paths in initial offset state
+//   3. append to DOM
+//   4. requestAnimationFrame → flip dashoffset to 0 (CSS transition)
+// ════════════════════════════════════════════════════════════════════
+let activeGroup = null;
+let frameCount = 0;
+let lastReadout = 0;
+
+function clearVines() {
+  if (activeGroup) {
+    activeGroup.remove();
+    activeGroup = null;
+  }
+}
+
+function grow() {
+  clearVines();
+  const rect = stage.getBoundingClientRect();
+  const W = rect.width, H = rect.height;
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+
+  const group = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+  group.classList.add('vine-group');
+  svg.appendChild(group);
+  activeGroup = group;
+
+  const N = params.numVines;
+  const margin = 60;
+  const usableW = W - margin * 2;
+
+  for (let i = 0; i < N; i++) {
+    // Per-vine deterministic seed → same vine grows the same way every re-trigger
+    const rand = seededRand(i + 1);
+
+    const t = N === 1 ? 0.5 : i / (N - 1);
+    const bx = margin + t * usableW + (rand() - 0.5) * 30;
+    const by = H - 20;
+    const h  = H * (0.45 + rand() * 0.35);
+    const swayAmp = 22 + rand() * 36;
+    const swayDir = i % 2 === 0 ? 1 : -1;
+
+    const { d, tipX, tipY } = vinePath(bx, by, h, swayAmp, swayDir, rand);
+
+    // The path itself — the stroke that draws
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', d);
+    path.setAttribute('class', 'vine-stem');
+    path.style.stroke = params.color;
+    path.style.strokeWidth = String(params.strokeW * (0.8 + rand() * 0.4));
+    path.style.opacity = String(0.55 + rand() * 0.4);
+    group.appendChild(path);
+
+    // ── Path-draw setup: dasharray / dashoffset = total length ──
+    // (cf. bloom-timeline .vine-stem rule, line ~197-202)
+    const len = path.getTotalLength();
+    path.style.strokeDasharray  = String(len);
+    path.style.strokeDashoffset = String(len);
+
+    // ── Per-path timing variation ── deterministic jitter
+    // (analogue of bloom-timeline's per-blade delay formula
+    //  delay = centerT*0.6 + layerZ*0.06 + Math.random()*0.12)
+    const jitter = params.jitter;
+    const dur   = params.baseDur * (1 - jitter * 0.3 + rand() * jitter * 0.6);
+    const delay = params.stagger * i + rand() * jitter * 240;
+    path.style.transition =
+      `stroke-dashoffset ${dur.toFixed(0)}ms ${params.easing} ${delay.toFixed(0)}ms`;
+
+    // Leaf glyph at the tip — scale-in after the stroke draws
+    const leaf = makeLeafGlyph(tipX, tipY, params.color, swayDir, rand);
+    leaf.style.transformOrigin = `${tipX.toFixed(2)}px ${tipY.toFixed(2)}px`;
+    leaf.style.transform = 'scale(0)';
+    leaf.style.opacity = '0';
+    const leafDelay = delay + dur * 0.85;
+    leaf.style.transition =
+      `opacity 350ms ease ${leafDelay.toFixed(0)}ms,` +
+      ` transform 500ms cubic-bezier(0.16,1,0.3,1) ${leafDelay.toFixed(0)}ms`;
+    group.appendChild(leaf);
+
+    // Stash refs for the rAF kick
+    path.dataset._ready = '1';
+    leaf.dataset._ready = '1';
+  }
+
+  // ── The two-step rAF trigger ──
+  // Append-with-offset, then on the NEXT frame flip to zero.
+  // (cf. bloom-timeline lines ~780-790)
+  requestAnimationFrame(() => {
+    if (!group.isConnected) return;
+    group.querySelectorAll('.vine-stem').forEach(p => {
+      p.style.strokeDashoffset = '0';
+    });
+    group.querySelectorAll('g').forEach(g => {
+      g.style.opacity = '1';
+      g.style.transform = 'scale(1)';
+    });
+  });
+
+  updateReadout();
+}
+
+
+// ─── Trigger wiring ──────────────────────────────────────────
+let hoverHandler = null;
+let clickHandler = null;
+let loopTimer = null;
+
+function rewireTrigger() {
+  // Tear down previous bindings
+  if (hoverHandler) { stage.removeEventListener('mouseenter', hoverHandler); hoverHandler = null; }
+  if (clickHandler) { stage.removeEventListener('click', clickHandler); clickHandler = null; }
+  if (loopTimer)    { clearInterval(loopTimer); loopTimer = null; }
+
+  if (params.trigger === 'hover') {
+    hoverHandler = () => grow();
+    stage.addEventListener('mouseenter', hoverHandler);
+  } else if (params.trigger === 'click') {
+    clickHandler = () => grow();
+    stage.addEventListener('click', clickHandler);
+  } else if (params.trigger === 'loop') {
+    grow();
+    loopTimer = setInterval(() => grow(), params.baseDur + 800);
+  }
+  // 'load' — nothing to wire; initial grow() already ran
+}
+
+
+// ─── Live readout (throttled) ────────────────────────────────
+function updateReadout() {
+  readoutEl.innerHTML =
+    `VINES ${params.numVines}` +
+    ` <span class="sep">·</span> ` +
+    `DUR ${params.baseDur}ms` +
+    ` <span class="sep">·</span> ` +
+    `JITTER ${params.jitter.toFixed(2)}` +
+    ` <span class="sep">·</span> ` +
+    `${currentFps()} FPS`;
+}
+
+let fpsFrame = 0, fpsLast = performance.now(), fpsValue = 60;
+function currentFps() { return fpsValue.toFixed(0); }
+function tick(now) {
+  fpsFrame++;
+  if (now - fpsLast > 500) {
+    fpsValue = (fpsFrame * 1000) / (now - fpsLast);
+    fpsFrame = 0; fpsLast = now;
+    if (now - lastReadout > 200) {
+      lastReadout = now;
+      updateReadout();
+    }
+  }
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+
+
+// ─── Resize ──────────────────────────────────────────────────
+addEventListener('resize', () => {
+  if (params.trigger !== 'load') grow();
+});
+
+
+// ─── Initial bootstrap ───────────────────────────────────────
+grow();
+rewireTrigger();
+</script>
+
+</body>
+</html>

@@ -1,0 +1,741 @@
+<!--
+  Filled-Band Topology · Topo Map Studio — Katarina Blind
+  =======================================================
+  Interactive demo for the filled-band-topology Claude skill.
+
+  Renders an FBM height field as height-bucketed filled color bands
+  (the "topographic map with filled regions" look). Tune band count,
+  noise scale, FBM octaves, sampling stride, color ramp, and toggle
+  adaptive range, animation, and the marching-squares outline overlay.
+
+  Self-contained — open with python3 -m http.server, or just file://.
+  Tokens inlined from data-mapping/shared/tokens.css (see comment).
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Filled-Band Topology · Topo Map · Studio</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+<style>
+/* === Inlined from data-mapping/shared/tokens.css ============================ */
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap');
+
+:root {
+  /* ─── Surfaces ─────────────────────────────────── */
+  --bg:            #0a0a0a;
+  --surface:       #ffffff;
+  --surface-muted: #f1f1ee;
+  --surface-dark:  #111214;
+  --border:        rgba(0, 0, 0, 0.06);
+  --border-dark:   rgba(255, 255, 255, 0.05);
+
+  /* ─── Text on light surfaces ───────────────────── */
+  --text:          #141414;
+  --text-muted:    rgba(20, 20, 20, 0.55);
+  --text-subtle:   rgba(20, 20, 20, 0.38);
+
+  /* ─── Text on dark surfaces ────────────────────── */
+  --text-inverse:        #f4f2ec;
+  --text-inverse-muted:  rgba(244, 242, 236, 0.55);
+  --text-inverse-subtle: rgba(244, 242, 236, 0.45);
+
+  /* ─── Accents (status / categorical) ───────────── */
+  --accent:        #10b981;
+  --accent-bg:     rgba(16, 185, 129, 0.12);
+  --amber:         #f59e0b;
+  --blue:          #3b82f6;
+  --red:           #ef4444;
+  --purple:        #8b5cf6;
+  --cyan:          #06b6d4;
+
+  /* ─── Radii ────────────────────────────────────── */
+  --radius:        clamp(18px, 2vw, 26px);
+  --radius-inner:  clamp(10px, 1.2vw, 16px);
+  --radius-pill:   999px;
+
+  /* ─── Typography ───────────────────────────────── */
+  --font: 'DM Sans', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-mono: 'DM Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --fs-hero:    clamp(28px, 3.5vw, 40px);
+  --fs-heading: 14px;
+  --fs-body:    12px;
+  --fs-small:   11px;
+  --fs-micro:   10px;
+  --fs-nano:    9px;
+
+  --fw-regular:  400;
+  --fw-medium:   500;
+  --fw-semibold: 600;
+  --fw-bold:     700;
+
+  /* ─── Motion ───────────────────────────────────── */
+  --ease:     cubic-bezier(0.4, 0, 0.2, 1);
+  --dur-fast: 0.18s;
+  --dur-base: 0.28s;
+
+  /* ─── Elevation ────────────────────────────────── */
+  --shadow: 0 1px 2px rgba(15, 18, 24, 0.04),
+            0 10px 28px rgba(15, 18, 24, 0.08);
+
+  /* ─── Outer spacing (fluid gutters) ────────────── */
+  --gutter: clamp(10px, 1.4vw, 18px);
+  --pad-y:  clamp(10px, 2vh, 24px);
+  --pad-x:  clamp(10px, 2vw, 24px);
+}
+
+/* ─── Global reset (minimal) ─────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  -webkit-font-smoothing: antialiased;
+}
+/* === End inlined tokens.css ================================================ */
+
+
+/* ─── Studio layout ───────────────────────────────── */
+body { height: 100vh; overflow: hidden; display: flex;
+  gap: var(--gutter); padding: var(--pad-y) var(--pad-x); }
+
+.col-main { flex: 1; display: flex; flex-direction: column;
+  gap: var(--gutter); min-width: 0; }
+
+.header { flex: 0 0 auto; display: flex; align-items: baseline;
+  justify-content: space-between; padding: 0 4px; gap: 12px; }
+.h-left { display: flex; align-items: baseline; gap: 12px; }
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: var(--fs-nano);
+  font-weight: var(--fw-medium);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-inverse);
+  background: rgba(244, 242, 236, 0.08);
+  padding: 4px 10px;
+  border-radius: var(--radius-pill);
+  border: 1px solid rgba(244, 242, 236, 0.10);
+}
+.h-title { font-size: var(--fs-heading); font-weight: var(--fw-semibold);
+  color: var(--text-inverse-subtle); letter-spacing: -0.01em; }
+.h-byline { font-size: var(--fs-nano); color: var(--text-inverse-subtle);
+  font-weight: var(--fw-regular); letter-spacing: 0.06em;
+  text-transform: uppercase; opacity: 0.6; }
+
+/* Main panel (light, holds canvas) */
+.main-panel { flex: 1 1 0; min-height: 0; position: relative;
+  background: var(--surface-muted); border-radius: var(--radius);
+  border: 1px solid var(--border); box-shadow: var(--shadow);
+  overflow: hidden; display: flex; flex-direction: column; }
+
+.stage { flex: 1 1 0; min-height: 0; position: relative;
+  background: #06080d; display: flex; align-items: stretch;
+  justify-content: stretch; overflow: hidden; }
+.stage canvas { display: block; width: 100%; height: 100%;
+  image-rendering: auto; }
+
+/* Floating overlay tags inside stage */
+.stage-tag { position: absolute; top: 14px; padding: 5px 12px;
+  font-size: var(--fs-nano); font-weight: var(--fw-semibold);
+  font-family: var(--font-mono); letter-spacing: 0.10em;
+  text-transform: uppercase; color: var(--text-inverse);
+  background: rgba(20, 20, 24, 0.55); backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: var(--radius-pill); z-index: 2; }
+.stage-tag.left  { left: 14px; }
+.stage-tag.right { right: 14px;
+  display: flex; align-items: center; gap: 6px; }
+.stage-tag .dot { width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+
+.legend { position: absolute; bottom: 14px; left: 14px;
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 12px; background: rgba(20,20,24,0.55);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: var(--radius-pill); z-index: 2;
+  font-family: var(--font-mono); font-size: var(--fs-nano);
+  color: var(--text-inverse-muted); letter-spacing: 0.08em;
+  text-transform: uppercase; }
+.legend .grad { width: 110px; height: 8px; border-radius: 4px;
+  background: linear-gradient(to right,
+    rgb(30,60,110), rgb(50,100,150), rgb(90,150,180),
+    rgb(200,200,160), rgb(180,170,120), rgb(140,130,90),
+    rgb(180,170,160), rgb(240,240,240));
+  border: 1px solid rgba(255,255,255,0.10); }
+
+
+/* ─── Sidebar (dark) ─────────────────────────────── */
+.sidebar { width: 320px; min-width: 320px; display: flex;
+  flex-direction: column; gap: var(--gutter); }
+
+.sb-card { background: var(--surface-dark); border-radius: var(--radius);
+  border: 1px solid var(--border-dark); box-shadow: var(--shadow);
+  padding: 20px 22px; color: var(--text-inverse); }
+.sb-card.scrollable { flex: 1 1 0; min-height: 0; overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.08) transparent; }
+.sb-card.scrollable::-webkit-scrollbar { width: 3px; }
+.sb-card.scrollable::-webkit-scrollbar-track { background: transparent; }
+.sb-card.scrollable::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.08); border-radius: 2px; }
+
+/* Live readout pill (top of sidebar) */
+.readout {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px; border-radius: var(--radius-pill);
+  background: rgba(244, 242, 236, 0.04);
+  border: 1px solid rgba(244, 242, 236, 0.08);
+  font-family: var(--font-mono); font-size: var(--fs-micro);
+  font-weight: var(--fw-medium); letter-spacing: 0.06em;
+  color: var(--text-inverse); text-transform: uppercase;
+  font-variant-numeric: tabular-nums;
+  margin-bottom: 22px;
+}
+.readout .dot { width: 7px; height: 7px; border-radius: 50%;
+  background: var(--accent); box-shadow: 0 0 10px var(--accent);
+  flex-shrink: 0; }
+.readout .stats { flex: 1; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.readout .sep { color: var(--text-inverse-subtle); margin: 0 4px; }
+
+/* Sidebar eyebrow headings */
+.sb-label { font-size: var(--fs-nano); font-weight: var(--fw-semibold);
+  letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--text-inverse-subtle); margin-bottom: 14px; }
+.sb-label:not(:first-of-type) { margin-top: 22px; }
+
+/* Slider rows */
+.ctrl { margin-bottom: 16px; }
+.ctrl:last-child { margin-bottom: 0; }
+.ctrl-head { display: flex; align-items: baseline;
+  justify-content: space-between; margin-bottom: 6px; }
+.ctrl-name { font-size: var(--fs-small); font-weight: var(--fw-medium);
+  color: var(--text-inverse); letter-spacing: -0.01em; }
+.ctrl-val {
+  font-family: var(--font-mono); font-size: var(--fs-micro);
+  font-weight: var(--fw-medium); color: var(--accent);
+  font-variant-numeric: tabular-nums; letter-spacing: 0.02em;
+  min-width: 40px; text-align: right;
+}
+.ctrl-desc { font-size: var(--fs-nano); color: var(--text-inverse-subtle);
+  margin-top: 4px; line-height: 1.5; letter-spacing: 0.02em; }
+
+/* Range input — minimalist track + thumb */
+input[type="range"] {
+  -webkit-appearance: none; appearance: none;
+  width: 100%; height: 18px; background: transparent;
+  cursor: pointer; display: block;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 2px; background: rgba(244,242,236,0.10);
+  border-radius: 2px;
+}
+input[type="range"]::-moz-range-track {
+  height: 2px; background: rgba(244,242,236,0.10);
+  border-radius: 2px;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 12px; height: 12px; border-radius: 50%;
+  background: var(--accent); margin-top: -5px;
+  border: 2px solid var(--surface-dark);
+  box-shadow: 0 0 0 1px rgba(16,185,129,0.4);
+  transition: transform var(--dur-fast) var(--ease);
+}
+input[type="range"]::-moz-range-thumb {
+  width: 12px; height: 12px; border-radius: 50%;
+  background: var(--accent); border: 2px solid var(--surface-dark);
+  box-shadow: 0 0 0 1px rgba(16,185,129,0.4);
+  transition: transform var(--dur-fast) var(--ease);
+}
+input[type="range"]:hover::-webkit-slider-thumb { transform: scale(1.15); }
+input[type="range"]:hover::-moz-range-thumb { transform: scale(1.15); }
+
+/* Select control (matches slider chrome) */
+select {
+  -webkit-appearance: none; appearance: none;
+  width: 100%; padding: 8px 12px;
+  background: rgba(244,242,236,0.04);
+  border: 1px solid rgba(244,242,236,0.10);
+  color: var(--text-inverse);
+  font-family: var(--font-mono); font-size: var(--fs-micro);
+  letter-spacing: 0.04em; text-transform: uppercase;
+  border-radius: var(--radius-inner); cursor: pointer;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--accent) 50%),
+    linear-gradient(135deg, var(--accent) 50%, transparent 50%);
+  background-position: calc(100% - 16px) 12px, calc(100% - 11px) 12px;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+select:focus { outline: none; border-color: var(--accent); }
+
+/* Checkbox row */
+.toggle { display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 12px; }
+.toggle:last-child { margin-bottom: 0; }
+.toggle-name { font-size: var(--fs-small); font-weight: var(--fw-medium);
+  color: var(--text-inverse); letter-spacing: -0.01em; }
+input[type="checkbox"] {
+  -webkit-appearance: none; appearance: none;
+  width: 32px; height: 18px; border-radius: 999px;
+  background: rgba(244,242,236,0.10);
+  position: relative; cursor: pointer;
+  transition: background var(--dur-fast) var(--ease);
+  flex-shrink: 0;
+}
+input[type="checkbox"]::after {
+  content: ''; position: absolute;
+  top: 2px; left: 2px; width: 14px; height: 14px;
+  border-radius: 50%; background: var(--text-inverse);
+  transition: transform var(--dur-fast) var(--ease);
+}
+input[type="checkbox"]:checked { background: var(--accent); }
+input[type="checkbox"]:checked::after { transform: translateX(14px); }
+
+/* Footnote/detail block */
+.detail { font-size: var(--fs-nano); color: var(--text-inverse-muted);
+  line-height: 1.65; letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums; }
+.detail code {
+  font-family: var(--font-mono);
+  background: rgba(255,255,255,0.06); padding: 1px 5px;
+  border-radius: 3px; font-size: 9px; color: var(--text-inverse);
+}
+</style>
+</head>
+<body>
+
+<div class="col-main">
+  <div class="header">
+    <div class="h-left">
+      <span class="eyebrow">Studio · 07</span>
+      <span class="h-title">Filled-Band Topology · Topo Map</span>
+    </div>
+    <div class="h-byline">Height-bucketed raster fill</div>
+  </div>
+
+  <div class="main-panel">
+    <div class="stage" id="stage">
+      <div class="stage-tag left">FBM field · per-pixel bucket → palette fill</div>
+      <div class="stage-tag right"><span class="dot"></span>Live raster</div>
+      <div class="legend" id="legend">
+        <span>low</span>
+        <div class="grad" id="gradEl"></div>
+        <span>high</span>
+      </div>
+      <canvas id="cv"></canvas>
+    </div>
+  </div>
+</div>
+
+<div class="sidebar">
+  <div class="sb-card scrollable">
+
+    <div class="readout">
+      <span class="dot"></span>
+      <span class="stats" id="readout">BANDS 8 <span class="sep">·</span> STRIDE 2 <span class="sep">·</span> 60 FPS</span>
+    </div>
+
+    <div class="sb-label">Bucketing</div>
+
+    <div class="ctrl">
+      <div class="ctrl-head">
+        <span class="ctrl-name">Bands</span>
+        <span class="ctrl-val" id="vBands">8</span>
+      </div>
+      <input type="range" id="bands" min="3" max="16" step="1" value="8">
+      <div class="ctrl-desc">Number of height buckets the field is quantized into.</div>
+    </div>
+
+    <div class="sb-label">Noise Field</div>
+
+    <div class="ctrl">
+      <div class="ctrl-head">
+        <span class="ctrl-name">Noise scale</span>
+        <span class="ctrl-val" id="vScale">2.00</span>
+      </div>
+      <input type="range" id="scale" min="0.5" max="4" step="0.05" value="2.0">
+      <div class="ctrl-desc">XY frequency of the FBM lattice.</div>
+    </div>
+
+    <div class="ctrl">
+      <div class="ctrl-head">
+        <span class="ctrl-name">FBM octaves</span>
+        <span class="ctrl-val" id="vOctaves">4</span>
+      </div>
+      <input type="range" id="octaves" min="1" max="6" step="1" value="4">
+      <div class="ctrl-desc">More octaves = finer detail, more cost.</div>
+    </div>
+
+    <div class="sb-label">Sampling</div>
+
+    <div class="ctrl">
+      <div class="ctrl-head">
+        <span class="ctrl-name">Stride</span>
+        <span class="ctrl-val" id="vStride">2</span>
+      </div>
+      <input type="range" id="stride" min="1" max="8" step="1" value="2">
+      <div class="ctrl-desc">Sample every Nth pixel and fill an N×N block. Higher = blockier "video-game minimap" look.</div>
+    </div>
+
+    <div class="sb-label">Color Ramp</div>
+
+    <div class="ctrl">
+      <select id="ramp">
+        <option value="topo" selected>Topo · blue → tan → white</option>
+        <option value="bathy">Bathy · deep blue → cyan → pale</option>
+        <option value="heat">Heatmap · purple → red → yellow → white</option>
+        <option value="mono">Mono · dark → light gray</option>
+      </select>
+      <div class="ctrl-desc" style="margin-top:8px;">Discrete band palette resampled to N bands.</div>
+    </div>
+
+    <div class="sb-label">Toggles</div>
+
+    <div class="toggle">
+      <span class="toggle-name">Adaptive range</span>
+      <input type="checkbox" id="adaptive" checked>
+    </div>
+    <div class="ctrl-desc" style="margin-top:-6px; margin-bottom:10px;">
+      Recompute <code>[hMin,hMax]</code> per frame so bands span the visible range.
+    </div>
+
+    <div class="toggle">
+      <span class="toggle-name">Animate</span>
+      <input type="checkbox" id="animate" checked>
+    </div>
+    <div class="ctrl-desc" style="margin-top:-6px; margin-bottom:10px;">
+      Drift the noise origin so the terrain slowly evolves.
+    </div>
+
+    <div class="toggle">
+      <span class="toggle-name">Outline overlay</span>
+      <input type="checkbox" id="outline">
+    </div>
+    <div class="ctrl-desc" style="margin-top:-6px; margin-bottom:10px;">
+      Marching-squares iso lines on top, sharing band thresholds.
+    </div>
+
+    <div class="sb-label">Notes</div>
+    <div class="detail">
+      Per-pixel raster fill. Each sample is bucketed via
+      <code>floor(t·N)</code> against either a fixed or adaptive range,
+      then written into an <code>ImageData</code> buffer that's blitted
+      as one <code>putImageData</code> per frame. The outline overlay
+      shares the same level thresholds, so each iso-line lands on a
+      band boundary. Pair with <code>marching-squares-topology</code>
+      for the line-only variant.
+    </div>
+
+  </div>
+</div>
+
+
+<script>
+// ─── Studio state ─────────────────────────────────────────────
+const params = {
+  bands: 8,
+  scale: 2.0,
+  octaves: 4,
+  stride: 2,
+  ramp: 'topo',
+  adaptive: true,
+  animate: true,
+  outline: false,
+};
+
+// ─── Wire sliders ─────────────────────────────────────────────
+function bind(id, key, fmt) {
+  const el = document.getElementById(id);
+  const lab = document.getElementById('v' + id[0].toUpperCase() + id.slice(1));
+  const upd = () => {
+    const v = parseFloat(el.value);
+    params[key] = v;
+    if (lab) lab.textContent = fmt(v);
+  };
+  el.addEventListener('input', upd);
+  upd();
+}
+bind('bands',   'bands',   v => v.toFixed(0));
+bind('scale',   'scale',   v => v.toFixed(2));
+bind('octaves', 'octaves', v => v.toFixed(0));
+bind('stride',  'stride',  v => v.toFixed(0));
+
+document.getElementById('ramp').addEventListener('change', e => {
+  params.ramp = e.target.value;
+  refreshLegendGradient();
+});
+['adaptive','animate','outline'].forEach(id => {
+  document.getElementById(id).addEventListener('change', e => {
+    params[id] = e.target.checked;
+  });
+});
+
+const readoutEl = document.getElementById('readout');
+
+
+// ─── Tiny value-noise FBM (no deps) ───────────────────────────
+const PERM = new Uint8Array(512);
+(() => {
+  const p = new Uint8Array(256).map((_, i) => i);
+  for (let i = 255; i > 0; i--) {
+    const j = (Math.random() * (i + 1)) | 0;
+    [p[i], p[j]] = [p[j], p[i]];
+  }
+  for (let i = 0; i < 512; i++) PERM[i] = p[i & 255];
+})();
+function fade(t) { return t * t * t * (t * (t * 6 - 15) + 10); }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function vnoise(x, y) {
+  const xi = Math.floor(x) & 255, yi = Math.floor(y) & 255;
+  const xf = x - Math.floor(x), yf = y - Math.floor(y);
+  const u = fade(xf), v = fade(yf);
+  const a = PERM[PERM[xi] + yi], b = PERM[PERM[xi + 1] + yi];
+  const c = PERM[PERM[xi] + yi + 1], d = PERM[PERM[xi + 1] + yi + 1];
+  return lerp(lerp(a / 255, b / 255, u), lerp(c / 255, d / 255, u), v);
+}
+function fbm(x, y, oct) {
+  let amp = 0.5, freq = 1, sum = 0, norm = 0;
+  for (let i = 0; i < oct; i++) {
+    sum += vnoise(x * freq, y * freq) * amp;
+    norm += amp;
+    amp *= 0.5; freq *= 2;
+  }
+  return sum / norm;
+}
+
+
+// ─── Color ramps ──────────────────────────────────────────────
+const RAMPS = {
+  topo: [
+    [30,60,110],[50,100,150],[90,150,180],
+    [200,200,160],[180,170,120],[140,130,90],
+    [180,170,160],[240,240,240],
+  ],
+  bathy: [
+    [10,20,55],[20,55,100],[30,90,140],
+    [50,140,180],[90,190,210],[160,225,230],
+    [210,240,240],[245,250,250],
+  ],
+  heat: [
+    [20,0,40],[80,10,90],[150,20,110],
+    [210,40,90],[245,90,40],[250,160,30],
+    [250,220,90],[255,250,220],
+  ],
+  mono: [
+    [20,20,22],[55,55,58],[90,90,94],
+    [125,125,130],[160,160,166],[195,195,200],
+    [220,220,224],[245,245,247],
+  ],
+};
+function bandColor(rampName, i, n) {
+  const ramp = RAMPS[rampName];
+  const t = n === 1 ? 0 : i / (n - 1);
+  const fi = t * (ramp.length - 1);
+  const i0 = Math.floor(fi);
+  const i1 = Math.min(ramp.length - 1, i0 + 1);
+  const u = fi - i0;
+  const a = ramp[i0], b = ramp[i1];
+  return [
+    a[0] + (b[0] - a[0]) * u,
+    a[1] + (b[1] - a[1]) * u,
+    a[2] + (b[2] - a[2]) * u,
+  ];
+}
+
+function refreshLegendGradient() {
+  const stops = RAMPS[params.ramp]
+    .map((c, i, arr) => `rgb(${c[0]},${c[1]},${c[2]}) ${(i / (arr.length - 1) * 100).toFixed(1)}%`)
+    .join(', ');
+  document.getElementById('gradEl').style.background =
+    `linear-gradient(to right, ${stops})`;
+}
+refreshLegendGradient();
+
+
+// ─── Canvas + render loop ─────────────────────────────────────
+const stageEl = document.getElementById('stage');
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+
+function resize() {
+  const r = stageEl.getBoundingClientRect();
+  cv.width = Math.max(2, Math.floor(r.width));
+  cv.height = Math.max(2, Math.floor(r.height));
+}
+resize();
+window.addEventListener('resize', resize);
+
+let t0 = 0;
+let lastFrame = performance.now();
+let fps = 60;
+let lastReadout = 0;
+
+function frame(now) {
+  const dt = (now - lastFrame) / 1000 || 0.016;
+  lastFrame = now;
+  fps = fps * 0.9 + (1 / dt) * 0.1;
+  if (params.animate) t0 += dt * 0.10;
+
+  const W = cv.width, H = cv.height;
+  const stride = Math.max(1, params.stride | 0);
+  const N = Math.max(2, params.bands | 0);
+  const sc = params.scale;
+  const oct = Math.max(1, params.octaves | 0);
+
+  // Pre-build palette once per frame
+  const ramp = new Array(N);
+  for (let i = 0; i < N; i++) ramp[i] = bandColor(params.ramp, i, N);
+
+  // Sample pass — also computes adaptive bounds when needed
+  const cols = Math.ceil(W / stride);
+  const rows = Math.ceil(H / stride);
+  const samples = new Float32Array(cols * rows);
+  let hMin = Infinity, hMax = -Infinity;
+  let k = 0;
+  const invW = sc / W, invH = sc / H;
+  for (let y = 0; y < H; y += stride) {
+    const ny = y * invH;
+    for (let x = 0; x < W; x += stride) {
+      const nx = x * invW + t0;
+      const h = fbm(nx, ny + t0 * 0.6, oct);
+      samples[k++] = h;
+      if (h < hMin) hMin = h;
+      if (h > hMax) hMax = h;
+    }
+  }
+  let lo, hi;
+  if (params.adaptive) { lo = hMin; hi = hMax; }
+  else                 { lo = 0.20; hi = 0.80; }
+  const range = (hi - lo) || 1e-6;
+
+  // Fill pass via ImageData (one putImageData per frame)
+  const img = ctx.createImageData(W, H);
+  const data = img.data;
+
+  k = 0;
+  for (let y = 0; y < H; y += stride) {
+    const yEnd = Math.min(H, y + stride);
+    for (let x = 0; x < W; x += stride) {
+      const t = (samples[k++] - lo) / range;
+      let bi = Math.floor(t * N);
+      if (bi < 0) bi = 0; else if (bi >= N) bi = N - 1;
+      const c = ramp[bi];
+      const r0 = c[0] | 0, g0 = c[1] | 0, b0 = c[2] | 0;
+      const xEnd = Math.min(W, x + stride);
+      for (let yy = y; yy < yEnd; yy++) {
+        let off = (yy * W + x) * 4;
+        for (let xx = x; xx < xEnd; xx++) {
+          data[off    ] = r0;
+          data[off + 1] = g0;
+          data[off + 2] = b0;
+          data[off + 3] = 255;
+          off += 4;
+        }
+      }
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+
+  // ── Optional outline overlay (marching squares on band thresholds) ──
+  if (params.outline) {
+    // Build a compact field on a coarser grid for the contour pass
+    const OC = Math.min(140, Math.max(40, Math.floor(W / 6)));
+    const OR = Math.min(140, Math.max(40, Math.floor(H / 6)));
+    const field = new Float32Array((OC + 1) * (OR + 1));
+    let fMin = Infinity, fMax = -Infinity;
+    for (let r = 0; r <= OR; r++) {
+      const ny = (r / OR) * sc;
+      for (let c = 0; c <= OC; c++) {
+        const nx = (c / OC) * sc + t0;
+        const h = fbm(nx, ny + t0 * 0.6, oct);
+        field[r * (OC + 1) + c] = h;
+        if (h < fMin) fMin = h; if (h > fMax) fMax = h;
+      }
+    }
+    const flo = params.adaptive ? fMin : 0.20;
+    const fhi = params.adaptive ? fMax : 0.80;
+    const fr = (fhi - flo) || 1e-6;
+
+    ctx.save();
+    ctx.lineWidth = 0.9;
+    ctx.strokeStyle = 'rgba(20, 20, 26, 0.55)';
+    ctx.beginPath();
+    const cellW = W / OC, cellH = H / OR;
+    // Draw lines at each band boundary (between adjacent buckets)
+    for (let li = 1; li < N; li++) {
+      const iso = flo + (li / N) * fr;
+      for (let r = 0; r < OR; r++) {
+        const y0 = r * cellH, y1 = y0 + cellH;
+        for (let c = 0; c < OC; c++) {
+          const x0 = c * cellW, x1 = x0 + cellW;
+          const v00 = field[r * (OC + 1) + c];
+          const v10 = field[r * (OC + 1) + c + 1];
+          const v01 = field[(r + 1) * (OC + 1) + c];
+          const v11 = field[(r + 1) * (OC + 1) + c + 1];
+          const idx = (v00 > iso ? 8 : 0) | (v10 > iso ? 4 : 0) |
+                      (v11 > iso ? 2 : 0) | (v01 > iso ? 1 : 0);
+          if (idx === 0 || idx === 15) continue;
+          const itT = (iso - v00) / (v10 - v00);
+          const itB = (iso - v01) / (v11 - v01);
+          const itL = (iso - v00) / (v01 - v00);
+          const itR = (iso - v10) / (v11 - v10);
+          const tx = x0 + itT * cellW, ty = y0;
+          const bx = x0 + itB * cellW, by = y1;
+          const lx = x0,                ly = y0 + itL * cellH;
+          const rx = x1,                ry = y0 + itR * cellH;
+          const seg = (ax, ay, bx2, by2) => {
+            ctx.moveTo(ax, ay); ctx.lineTo(bx2, by2);
+          };
+          switch (idx) {
+            case 1:  seg(lx,ly, bx,by); break;
+            case 2:  seg(rx,ry, bx,by); break;
+            case 3:  seg(lx,ly, rx,ry); break;
+            case 4:  seg(tx,ty, rx,ry); break;
+            case 5:  seg(tx,ty, lx,ly); seg(rx,ry, bx,by); break;
+            case 6:  seg(tx,ty, bx,by); break;
+            case 7:  seg(tx,ty, lx,ly); break;
+            case 8:  seg(tx,ty, lx,ly); break;
+            case 9:  seg(tx,ty, bx,by); break;
+            case 10: seg(tx,ty, rx,ry); seg(lx,ly, bx,by); break;
+            case 11: seg(tx,ty, rx,ry); break;
+            case 12: seg(lx,ly, rx,ry); break;
+            case 13: seg(rx,ry, bx,by); break;
+            case 14: seg(lx,ly, bx,by); break;
+          }
+        }
+      }
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // ── Live readout ─────────────────────────────────────────
+  if (now - lastReadout > 160) {
+    lastReadout = now;
+    readoutEl.innerHTML =
+      `BANDS ${N}` +
+      ` <span class="sep">·</span> ` +
+      `STRIDE ${stride}` +
+      ` <span class="sep">·</span> ` +
+      `${fps.toFixed(0)} FPS`;
+  }
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+
+</body>
+</html>

@@ -1,0 +1,13 @@
+{
+  "name": "katarina-skills-marketplace",
+  "owner": {
+    "name": "Katarina Blind"
+  },
+  "plugins": [
+    {
+      "name": "katarina-skills",
+      "source": "./plugins/katarina-skills",
+      "description": "Generative & interactive Claude Code skills: 3D terrain, contour topology, generative trees, swimming fish, presence pings, proximity audio, minimap HUD, and more."
+    }
+  ]
+}

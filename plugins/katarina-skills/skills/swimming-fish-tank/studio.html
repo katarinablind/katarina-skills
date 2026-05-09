@@ -1,0 +1,735 @@
+<!--
+  Swimming Fish · Autonomous Tank — Studio
+  ========================================
+  Interactive demo for the swimming-fish-tank Claude skill.
+
+  Lifts the per-fish state and the two-oscillator update loop
+  from telefishin/components/tank/Fish.tsx (and DemoTank.tsx).
+  Vanilla JS / DOM — no React, no Motion. The fish swim left-to-right
+  on long looping X tweens with a softer Y bob and depth-driven scale.
+
+  Tokens inlined from data-mapping/shared/tokens.css (see comment).
+  Self-contained — open via python3 -m http.server, or file://.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Swimming Fish · Autonomous Tank · Studio</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+<style>
+/* === Inlined from data-mapping/shared/tokens.css ============================ */
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap');
+
+:root {
+  --bg:            #0a0a0a;
+  --surface:       #ffffff;
+  --surface-muted: #f1f1ee;
+  --surface-dark:  #111214;
+  --border:        rgba(0, 0, 0, 0.06);
+  --border-dark:   rgba(255, 255, 255, 0.05);
+  --text:          #141414;
+  --text-muted:    rgba(20, 20, 20, 0.55);
+  --text-subtle:   rgba(20, 20, 20, 0.38);
+  --text-inverse:        #f4f2ec;
+  --text-inverse-muted:  rgba(244, 242, 236, 0.55);
+  --text-inverse-subtle: rgba(244, 242, 236, 0.45);
+  --accent:        #10b981;
+  --accent-bg:     rgba(16, 185, 129, 0.12);
+  --amber:         #f59e0b;
+  --blue:          #3b82f6;
+  --red:           #ef4444;
+  --radius:        clamp(18px, 2vw, 26px);
+  --radius-inner:  clamp(10px, 1.2vw, 16px);
+  --radius-pill:   999px;
+  --font: 'DM Sans', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-mono: 'DM Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --fs-hero:    clamp(28px, 3.5vw, 40px);
+  --fs-heading: 14px;
+  --fs-body:    12px;
+  --fs-small:   11px;
+  --fs-micro:   10px;
+  --fs-nano:    9px;
+  --fw-regular:  400;
+  --fw-medium:   500;
+  --fw-semibold: 600;
+  --fw-bold:     700;
+  --ease:     cubic-bezier(0.4, 0, 0.2, 1);
+  --dur-fast: 0.18s;
+  --dur-base: 0.28s;
+  --shadow: 0 1px 2px rgba(15, 18, 24, 0.04),
+            0 10px 28px rgba(15, 18, 24, 0.08);
+  --gutter: clamp(10px, 1.4vw, 18px);
+  --pad-y:  clamp(10px, 2vh, 24px);
+  --pad-x:  clamp(10px, 2vw, 24px);
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  -webkit-font-smoothing: antialiased;
+}
+/* === End inlined tokens.css ================================================ */
+
+
+/* ─── Studio layout (flex on body, direct parent of col-main + sidebar) ──── */
+body { height: 100vh; overflow: hidden; display: flex;
+  gap: var(--gutter); padding: var(--pad-y) var(--pad-x); }
+
+.col-main { flex: 1; display: flex; flex-direction: column;
+  gap: var(--gutter); min-width: 0; }
+
+.header { flex: 0 0 auto; display: flex; align-items: baseline;
+  justify-content: space-between; padding: 0 4px; gap: 12px; }
+.h-left { display: flex; align-items: baseline; gap: 12px; }
+.eyebrow {
+  font-family: var(--font-mono); font-size: var(--fs-nano);
+  font-weight: var(--fw-medium); letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--text-inverse);
+  background: rgba(244, 242, 236, 0.08); padding: 4px 10px;
+  border-radius: var(--radius-pill);
+  border: 1px solid rgba(244, 242, 236, 0.10);
+}
+.h-title { font-size: var(--fs-heading); font-weight: var(--fw-semibold);
+  color: var(--text-inverse-subtle); letter-spacing: -0.01em; }
+.h-byline { font-size: var(--fs-nano); color: var(--text-inverse-subtle);
+  font-weight: var(--fw-regular); letter-spacing: 0.06em;
+  text-transform: uppercase; opacity: 0.6; }
+
+.main-panel { flex: 1 1 0; min-height: 0; position: relative;
+  background: var(--surface-muted); border-radius: var(--radius);
+  border: 1px solid var(--border); box-shadow: var(--shadow);
+  overflow: hidden; display: flex; flex-direction: column; }
+
+.tank { flex: 1 1 0; min-height: 0; position: relative;
+  overflow: hidden;
+  background: linear-gradient(180deg, #1f5b86 0%, #0e2c46 100%); }
+.tank .surface-shimmer {
+  position: absolute; inset: 0 0 auto 0; height: 80px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.18) 0%, transparent 100%);
+  pointer-events: none;
+}
+.tank .floor-glow {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 120px;
+  background: linear-gradient(0deg, rgba(0,0,0,0.5) 0%, transparent 100%);
+  pointer-events: none;
+}
+.tank .bubbles {
+  position: absolute; inset: 0; pointer-events: none;
+  background-image:
+    radial-gradient(2px 2px at 12% 80%, rgba(255,255,255,0.4), transparent),
+    radial-gradient(2px 2px at 28% 60%, rgba(255,255,255,0.3), transparent),
+    radial-gradient(1.5px 1.5px at 64% 90%, rgba(255,255,255,0.5), transparent),
+    radial-gradient(2.5px 2.5px at 82% 70%, rgba(255,255,255,0.3), transparent);
+}
+
+.fish {
+  position: absolute; left: 0; top: 0;
+  will-change: transform; pointer-events: none;
+  display: block;
+}
+.fish .glow {
+  position: absolute; inset: -50%;
+  border-radius: 50%;
+  background: radial-gradient(circle at center,
+    rgba(255, 200, 80, 0.55) 0%,
+    rgba(255, 165, 30, 0.30) 30%,
+    rgba(255, 130, 0, 0.10) 60%,
+    transparent 80%);
+  filter: blur(8px);
+  z-index: -1;
+}
+.fish svg { display: block; width: 100%; height: 100%;
+  filter: drop-shadow(0 4px 8px rgba(0,0,0,0.35)); }
+
+.path-svg { position: absolute; inset: 0; pointer-events: none;
+  width: 100%; height: 100%; }
+.path-svg.hidden { display: none; }
+
+.stage-tag { position: absolute; top: 14px; padding: 5px 12px;
+  font-size: var(--fs-nano); font-weight: var(--fw-semibold);
+  font-family: var(--font-mono); letter-spacing: 0.10em;
+  text-transform: uppercase; color: var(--text-inverse);
+  background: rgba(20, 20, 24, 0.55); backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: var(--radius-pill); z-index: 5; }
+.stage-tag.left  { left: 14px; }
+.stage-tag.right { right: 14px;
+  display: flex; align-items: center; gap: 6px; }
+.stage-tag .dot { width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+
+.legend { position: absolute; bottom: 14px; left: 14px;
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 12px; background: rgba(20,20,24,0.55);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: var(--radius-pill); z-index: 5;
+  font-family: var(--font-mono); font-size: var(--fs-nano);
+  color: var(--text-inverse-muted); letter-spacing: 0.08em;
+  text-transform: uppercase; }
+
+
+/* ─── Sidebar (dark) ─────────────────────────────── */
+.sidebar { width: 320px; min-width: 320px; display: flex;
+  flex-direction: column; gap: var(--gutter); }
+
+.sb-card { background: var(--surface-dark); border-radius: var(--radius);
+  border: 1px solid var(--border-dark); box-shadow: var(--shadow);
+  padding: 20px 22px; color: var(--text-inverse); }
+.sb-card.scrollable { flex: 1 1 0; min-height: 0; overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.08) transparent; }
+.sb-card.scrollable::-webkit-scrollbar { width: 3px; }
+.sb-card.scrollable::-webkit-scrollbar-track { background: transparent; }
+.sb-card.scrollable::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.08); border-radius: 2px; }
+
+.readout {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px; border-radius: var(--radius-pill);
+  background: rgba(244, 242, 236, 0.04);
+  border: 1px solid rgba(244, 242, 236, 0.08);
+  font-family: var(--font-mono); font-size: var(--fs-micro);
+  font-weight: var(--fw-medium); letter-spacing: 0.06em;
+  color: var(--text-inverse); text-transform: uppercase;
+  font-variant-numeric: tabular-nums;
+  margin-bottom: 22px;
+}
+.readout .dot { width: 7px; height: 7px; border-radius: 50%;
+  background: var(--accent); box-shadow: 0 0 10px var(--accent);
+  flex-shrink: 0; }
+.readout .stats { flex: 1; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.readout .sep { color: var(--text-inverse-subtle); margin: 0 4px; }
+
+.sb-label { font-size: var(--fs-nano); font-weight: var(--fw-semibold);
+  letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--text-inverse-subtle); margin-bottom: 14px; }
+.sb-label:not(:first-of-type) { margin-top: 22px; }
+
+.ctrl { margin-bottom: 16px; }
+.ctrl:last-child { margin-bottom: 0; }
+.ctrl-head { display: flex; align-items: baseline;
+  justify-content: space-between; margin-bottom: 6px; }
+.ctrl-name { font-size: var(--fs-small); font-weight: var(--fw-medium);
+  color: var(--text-inverse); letter-spacing: -0.01em; }
+.ctrl-val {
+  font-family: var(--font-mono); font-size: var(--fs-micro);
+  font-weight: var(--fw-medium); color: var(--accent);
+  font-variant-numeric: tabular-nums; letter-spacing: 0.02em;
+  min-width: 40px; text-align: right;
+}
+.ctrl-desc { font-size: var(--fs-nano); color: var(--text-inverse-subtle);
+  margin-top: 4px; line-height: 1.5; letter-spacing: 0.02em; }
+
+input[type="range"] {
+  -webkit-appearance: none; appearance: none;
+  width: 100%; height: 18px; background: transparent;
+  cursor: pointer; display: block;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 2px; background: rgba(244,242,236,0.10); border-radius: 2px;
+}
+input[type="range"]::-moz-range-track {
+  height: 2px; background: rgba(244,242,236,0.10); border-radius: 2px;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 12px; height: 12px; border-radius: 50%;
+  background: var(--accent); margin-top: -5px;
+  border: 2px solid var(--surface-dark);
+  box-shadow: 0 0 0 1px rgba(16,185,129,0.4);
+  transition: transform var(--dur-fast) var(--ease);
+}
+input[type="range"]::-moz-range-thumb {
+  width: 12px; height: 12px; border-radius: 50%;
+  background: var(--accent); border: 2px solid var(--surface-dark);
+  box-shadow: 0 0 0 1px rgba(16,185,129,0.4);
+  transition: transform var(--dur-fast) var(--ease);
+}
+input[type="range"]:hover::-webkit-slider-thumb { transform: scale(1.15); }
+input[type="range"]:hover::-moz-range-thumb { transform: scale(1.15); }
+
+input[type="color"] {
+  width: 100%; height: 36px; padding: 2px;
+  background: rgba(244,242,236,0.04);
+  border: 1px solid rgba(244,242,236,0.10);
+  border-radius: var(--radius-inner);
+  cursor: pointer;
+}
+input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
+input[type="color"]::-webkit-color-swatch { border: none; border-radius: calc(var(--radius-inner) - 4px); }
+
+.checkbox-row {
+  display: flex; align-items: center; gap: 10px;
+  font-size: var(--fs-small); color: var(--text-inverse);
+  cursor: pointer; user-select: none;
+}
+.checkbox-row input[type="checkbox"] {
+  -webkit-appearance: none; appearance: none;
+  width: 14px; height: 14px;
+  border: 1px solid rgba(244,242,236,0.25);
+  border-radius: 3px; background: transparent;
+  cursor: pointer; position: relative;
+  transition: all var(--dur-fast) var(--ease);
+}
+.checkbox-row input[type="checkbox"]:checked {
+  background: var(--accent); border-color: var(--accent);
+}
+.checkbox-row input[type="checkbox"]:checked::after {
+  content: ''; position: absolute; left: 3px; top: 0;
+  width: 5px; height: 9px;
+  border: solid var(--surface-dark);
+  border-width: 0 2px 2px 0; transform: rotate(45deg);
+}
+
+.btn-row { display: flex; gap: 8px; margin-bottom: 16px; }
+.btn {
+  flex: 1; padding: 10px 12px;
+  background: rgba(244,242,236,0.04);
+  color: var(--text-inverse);
+  border: 1px solid rgba(244,242,236,0.12);
+  border-radius: var(--radius-inner);
+  font-family: var(--font-mono); font-size: var(--fs-micro);
+  font-weight: var(--fw-semibold); letter-spacing: 0.10em;
+  text-transform: uppercase; cursor: pointer;
+  transition: background var(--dur-fast) var(--ease),
+              border-color var(--dur-fast) var(--ease);
+}
+.btn:hover { background: rgba(244,242,236,0.10); border-color: rgba(244,242,236,0.20); }
+.btn.primary { background: var(--accent-bg); border-color: rgba(16,185,129,0.40); color: var(--accent); }
+.btn.primary:hover { background: rgba(16,185,129,0.20); border-color: rgba(16,185,129,0.60); }
+
+.detail { font-size: var(--fs-nano); color: var(--text-inverse-muted);
+  line-height: 1.65; letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums; }
+.detail code {
+  font-family: var(--font-mono);
+  background: rgba(255,255,255,0.06); padding: 1px 5px;
+  border-radius: 3px; font-size: 9px; color: var(--text-inverse);
+}
+</style>
+</head>
+<body>
+
+<div class="col-main">
+  <div class="header">
+    <div class="h-left">
+      <span class="eyebrow">Studio · 13</span>
+      <span class="h-title">Swimming Fish · Autonomous Tank</span>
+    </div>
+    <div class="h-byline">id-derived per-fish · two-oscillator loop · no AI</div>
+  </div>
+
+  <div class="main-panel">
+    <div class="tank" id="tank">
+      <div class="surface-shimmer"></div>
+      <div class="bubbles"></div>
+      <div class="floor-glow"></div>
+      <svg class="path-svg hidden" id="pathSvg"></svg>
+      <div class="stage-tag left">Tank · ferry traffic · L → R loop</div>
+      <div class="stage-tag right"><span class="dot"></span>id-seeded · staggered phase</div>
+      <div class="legend">duration 18–26 s · bob 4 s easeInOut · depth → scale</div>
+    </div>
+  </div>
+</div>
+
+
+<div class="sidebar">
+  <div class="sb-card scrollable">
+
+    <div class="readout">
+      <span class="dot"></span>
+      <span class="stats" id="readout">FISH 0 <span class="sep">·</span> AVG SPEED 0.00 <span class="sep">·</span> 60 FPS</span>
+    </div>
+
+    <div class="sb-label">Population</div>
+
+    <div class="ctrl">
+      <div class="ctrl-head">
+        <span class="ctrl-name">Fish count</span>
+        <span class="ctrl-val" id="vCount">8</span>
+      </div>
+      <input type="range" id="count" min="1" max="30" step="1" value="8">
+      <div class="ctrl-desc">Number of independent fish in the tank.</div>
+    </div>
+
+    <div class="btn-row">
+      <button class="btn" id="addFish" type="button">Add fish</button>
+      <button class="btn primary" id="reset" type="button">Reset</button>
+    </div>
+
+    <div class="sb-label">Swim parameters</div>
+
+    <div class="ctrl">
+      <div class="ctrl-head">
+        <span class="ctrl-name">Base swim speed</span>
+        <span class="ctrl-val" id="vSpeed">1.00</span>
+      </div>
+      <input type="range" id="speed" min="0.2" max="3" step="0.01" value="1.0">
+      <div class="ctrl-desc">Multiplier on the per-fish duration. Higher = faster crossings.</div>
+    </div>
+
+    <div class="ctrl">
+      <div class="ctrl-head">
+        <span class="ctrl-name">Speed jitter</span>
+        <span class="ctrl-val" id="vJitter">0.30</span>
+      </div>
+      <input type="range" id="jitter" min="0" max="1" step="0.01" value="0.30">
+      <div class="ctrl-desc">How much per-fish speed varies from base.</div>
+    </div>
+
+    <div class="ctrl">
+      <div class="ctrl-head">
+        <span class="ctrl-name">Path randomness</span>
+        <span class="ctrl-val" id="vWander">0.50</span>
+      </div>
+      <input type="range" id="wander" min="0" max="1" step="0.01" value="0.50">
+      <div class="ctrl-desc">Bob amplitude × phase scatter. 0 = straight, 1 = wandery.</div>
+    </div>
+
+    <div class="ctrl">
+      <div class="ctrl-head">
+        <span class="ctrl-name">Depth range</span>
+        <span class="ctrl-val" id="vDepth">0.50</span>
+      </div>
+      <input type="range" id="depth" min="0" max="1" step="0.01" value="0.50">
+      <div class="ctrl-desc">Y-driven scale variation. 0 = flat, 1 = strong parallax.</div>
+    </div>
+
+    <div class="sb-label">Tank</div>
+
+    <div class="ctrl">
+      <div class="ctrl-head">
+        <span class="ctrl-name">Tank color</span>
+        <span class="ctrl-val" id="vColor">#1f5b86</span>
+      </div>
+      <input type="color" id="color" value="#1f5b86">
+      <div class="ctrl-desc">Drives the water gradient top-stop.</div>
+    </div>
+
+    <label class="checkbox-row" style="margin-top: 14px;">
+      <input type="checkbox" id="paths">
+      Show paths (debug overlay)
+    </label>
+
+    <div class="sb-label">Notes</div>
+    <div class="detail">
+      Lifted from <code>Fish.tsx</code>: id-seeded duration
+      <code>18 + (charCode + len) % 9</code>, bob phase
+      <code>(charCode + i*1.3) % 4</code>, row stagger
+      <code>padding + step * i</code>. The DemoTank pattern
+      adds per-fish <code>startX</code> offsets so the tank
+      feels lived-in on first frame.
+    </div>
+
+  </div>
+</div>
+
+
+<script>
+// ════════════════════════════════════════════════════════════════════
+// === Fish swim + path logic: lifted from
+// === telefishin/components/tank/Fish.tsx (lines ~24-99) and
+// === telefishin/components/landing/DemoTank.tsx (lines ~22-110).
+// ===
+// === The pattern is a per-fish two-oscillator: linear X tween over
+// === ~20 s (off-screen-left → off-screen-right, looping), plus an
+// === easeInOut sine bob on Y over ~4 s. All per-fish properties are
+// === id-derived so a fish always behaves the same way.
+// ════════════════════════════════════════════════════════════════════
+
+const tank = document.getElementById('tank');
+const pathSvg = document.getElementById('pathSvg');
+const readoutEl = document.getElementById('readout');
+
+// Studio-tunable params
+const params = {
+  count: 8,
+  speed: 1.0,
+  jitter: 0.30,
+  wander: 0.50,
+  depth: 0.50,
+  color: '#1f5b86',
+  paths: false,
+};
+
+let TANK_W = 0, TANK_H = 0;
+function measure() {
+  const r = tank.getBoundingClientRect();
+  TANK_W = r.width; TANK_H = r.height;
+  pathSvg.setAttribute('viewBox', `0 0 ${TANK_W} ${TANK_H}`);
+}
+measure();
+
+// Sprite palette — small SVG fish in five colors
+const FISH_COLORS = [
+  { body: '#e7a14f', tail: '#c8852a' },  // amber
+  { body: '#5dade2', tail: '#2e86c1' },  // blue
+  { body: '#e74c3c', tail: '#a93226' },  // red
+  { body: '#f1c40f', tail: '#b7950b' },  // yellow
+  { body: '#9b59b6', tail: '#6c3483' },  // purple
+  { body: '#1abc9c', tail: '#117a65' },  // teal
+];
+
+function fishSvg(colorIdx) {
+  const c = FISH_COLORS[colorIdx % FISH_COLORS.length];
+  return `
+    <svg viewBox="0 0 100 60" xmlns="http://www.w3.org/2000/svg">
+      <ellipse cx="50" cy="30" rx="32" ry="16" fill="${c.body}"/>
+      <polygon points="18,30 2,16 2,44" fill="${c.tail}"/>
+      <ellipse cx="56" cy="22" rx="14" ry="6" fill="${c.tail}" opacity="0.55"/>
+      <ellipse cx="46" cy="38" rx="10" ry="4" fill="${c.tail}" opacity="0.55"/>
+      <circle cx="68" cy="26" r="3.5" fill="white"/>
+      <circle cx="69" cy="26" r="1.8" fill="black"/>
+      <path d="M 78 28 Q 84 30 78 32" stroke="${c.tail}" stroke-width="1.2" fill="none"/>
+    </svg>`;
+}
+
+// ─── Per-fish state ──────────────────────────────────────────────────
+// Lifted from Fish.tsx lines ~30-53. All fields derived from a
+// stable string id so the same fish behaves the same way.
+const FISH_BASE_SIZE = 60;  // px (smaller than telefishin's 120)
+const PADDING = 50;
+const BOB_DUR = 4;
+
+function makeFishState(id, index, total) {
+  const c = id.charCodeAt(0);
+  // Row position — even stagger across tank height.
+  // Fish.tsx: padding + step * index
+  const usable = TANK_H - FISH_BASE_SIZE - PADDING * 2;
+  const step   = total <= 1 ? 0 : usable / total;
+  const yRow   = PADDING + step * index;
+
+  // Duration 18–26 s, deterministic per id.
+  // Fish.tsx: 18 + ((id.charCodeAt(0) + id.length) % 9)
+  const baseDur = 18 + ((c + id.length) % 9);
+
+  // Per-fish jitter — extra ±jitter seconds derived from id.
+  const jitterDelta = (((c * 13 + id.length * 7) % 100) / 100 - 0.5) * 2;
+
+  // Bob phase — Fish.tsx: (charCode + index * 1.3) % bobDuration
+  const bobPhase = (c + index * 1.3) % BOB_DUR;
+
+  // Initial delay — Fish.tsx: index * 5 (we use smaller stagger so tank
+  // fills faster; DemoTank achieves the same look with hand-tuned
+  // per-fish startX offsets, see lines 12-17).
+  const delay = index * 1.6;
+
+  // Pick a sprite color from id
+  const colorIdx = (c + id.length) % FISH_COLORS.length;
+
+  return {
+    id,
+    index,
+    yRow,                 // base row position
+    baseDur,              // canonical duration in seconds
+    jitterDelta,          // per-fish speed offset (-1..1)
+    bobPhase,
+    delay,
+    colorIdx,
+    el: null,
+  };
+}
+
+// ─── Mount/unmount ───────────────────────────────────────────────────
+const fish = [];
+
+function spawnFish(id, index, total) {
+  const f = makeFishState(id, index, total);
+  const el = document.createElement('div');
+  el.className = 'fish';
+  el.style.width  = FISH_BASE_SIZE + 'px';
+  el.style.height = FISH_BASE_SIZE * 0.6 + 'px';
+  el.innerHTML = `<div class="glow"></div>${fishSvg(f.colorIdx)}`;
+  tank.appendChild(el);
+  f.el = el;
+  fish.push(f);
+  return f;
+}
+
+function clearFish() {
+  for (const f of fish) f.el.remove();
+  fish.length = 0;
+  pathSvg.innerHTML = '';
+}
+
+function rebuildFish(n) {
+  clearFish();
+  for (let i = 0; i < n; i++) spawnFish('f-' + i + '-' + Math.random().toString(36).slice(2, 6), i, n);
+  if (params.paths) drawPaths();
+}
+
+// ─── Per-frame update ────────────────────────────────────────────────
+// Two-oscillator loop, lifted from Fish.tsx animate{} object lines 77-98.
+//   x: [startX, endX] linear, repeat: Infinity, repeatType: "loop"
+//   y: [0, -20, 0]    easeInOut, repeat: Infinity
+// In React+Motion this is two tweens; in vanilla we evaluate them
+// each frame from elapsed time.
+
+const t0 = performance.now() / 1000;
+
+function frame(now) {
+  requestAnimationFrame(frame);
+  const t = now / 1000 - t0;
+
+  let speedSum = 0;
+  for (const f of fish) {
+    // Effective duration: base / (speed * (1 + jitter * jitterDelta))
+    const speedMul = params.speed * (1 + params.jitter * f.jitterDelta);
+    const dur      = Math.max(2, f.baseDur / Math.max(0.01, speedMul));
+
+    // X: linear loop over `dur`, with start delay (Fish.tsx repeat: loop)
+    const startX = -FISH_BASE_SIZE - 50;
+    const endX   = TANK_W + 50;
+    const tx = ((t - f.delay) % dur + dur) % dur;
+    const px = tx / dur;
+    const x  = startX + (endX - startX) * px;
+
+    // Y: row + bob (easeInOut sine over BOB_DUR)
+    // Fish.tsx: y: [0, -20, 0], duration: 4, ease: "easeInOut"
+    const wanderAmp = 8 + params.wander * 28;
+    const tb  = ((t + f.bobPhase) / BOB_DUR) * Math.PI * 2;
+    const bob = -Math.sin(tb) * wanderAmp;
+    const y   = f.yRow + bob;
+
+    // Depth scale — extension to Fish.tsx (which is uniform-size).
+    // Lower rows = closer = larger.
+    const depthT = TANK_H > 0 ? (f.yRow / TANK_H) : 0.5;
+    const scale  = 1 - params.depth * 0.5 + params.depth * depthT * 0.9;
+
+    f.el.style.transform = `translate(${x}px, ${y}px) scale(${scale.toFixed(3)})`;
+    f.el.style.zIndex    = String(Math.floor(depthT * 100));
+    f.el.style.opacity   = String(0.7 + 0.3 * depthT);
+
+    speedSum += speedMul;
+  }
+
+  // Live readout
+  if (now - lastReadout > 160) {
+    lastReadout = now;
+    fpsAvg = fpsAvg * 0.9 + (1 / Math.max(0.001, (now - lastFrame) / 1000)) * 0.1;
+    const avgSpeed = fish.length ? speedSum / fish.length : 0;
+    readoutEl.innerHTML =
+      `FISH ${fish.length}` +
+      ` <span class="sep">·</span> AVG SPEED ${avgSpeed.toFixed(2)}` +
+      ` <span class="sep">·</span> ${fpsAvg.toFixed(0)} FPS`;
+  }
+  lastFrame = now;
+}
+let lastReadout = 0, lastFrame = performance.now(), fpsAvg = 60;
+requestAnimationFrame(frame);
+
+// ─── Path debug overlay ──────────────────────────────────────────────
+function drawPaths() {
+  pathSvg.innerHTML = '';
+  if (!params.paths) return;
+  const wanderAmp = 8 + params.wander * 28;
+  for (const f of fish) {
+    // Sample the swim path at 60 points
+    const pts = [];
+    const startX = -FISH_BASE_SIZE - 50;
+    const endX   = TANK_W + 50;
+    const speedMul = params.speed * (1 + params.jitter * f.jitterDelta);
+    const dur      = Math.max(2, f.baseDur / Math.max(0.01, speedMul));
+    for (let i = 0; i <= 60; i++) {
+      const px = i / 60;
+      const x  = startX + (endX - startX) * px;
+      // For visualization, map path-position to a synthetic time
+      const synthT = px * dur + f.bobPhase;
+      const tb     = (synthT / BOB_DUR) * Math.PI * 2;
+      const bob    = -Math.sin(tb) * wanderAmp;
+      pts.push(`${x.toFixed(1)},${(f.yRow + bob).toFixed(1)}`);
+    }
+    const c = FISH_COLORS[f.colorIdx % FISH_COLORS.length].body;
+    pathSvg.insertAdjacentHTML('beforeend',
+      `<polyline points="${pts.join(' ')}" fill="none" stroke="${c}" stroke-width="1" stroke-opacity="0.55" stroke-dasharray="3 4"/>`);
+  }
+}
+
+// ─── UI wiring ───────────────────────────────────────────────────────
+function bindSlider(id, key, label, fmt) {
+  const el  = document.getElementById(id);
+  const lab = document.getElementById(label);
+  const update = () => {
+    params[key] = id === 'count' ? parseInt(el.value, 10) : parseFloat(el.value);
+    lab.textContent = fmt(params[key]);
+    if (id === 'count') rebuildFish(params.count);
+    if (params.paths) drawPaths();
+  };
+  el.addEventListener('input', update);
+  update();
+}
+bindSlider('count',  'count',  'vCount',  v => String(v));
+bindSlider('speed',  'speed',  'vSpeed',  v => v.toFixed(2));
+bindSlider('jitter', 'jitter', 'vJitter', v => v.toFixed(2));
+bindSlider('wander', 'wander', 'vWander', v => v.toFixed(2));
+bindSlider('depth',  'depth',  'vDepth',  v => v.toFixed(2));
+
+document.getElementById('addFish').addEventListener('click', () => {
+  const total = fish.length + 1;
+  spawnFish('f-' + Date.now().toString(36), fish.length, total);
+  // Bump count slider if user adds beyond it
+  const countEl = document.getElementById('count');
+  if (fish.length > parseInt(countEl.value, 10)) {
+    countEl.value = String(Math.min(30, fish.length));
+    document.getElementById('vCount').textContent = countEl.value;
+    params.count = parseInt(countEl.value, 10);
+  }
+  if (params.paths) drawPaths();
+});
+
+document.getElementById('reset').addEventListener('click', () => {
+  rebuildFish(params.count);
+});
+
+const colorEl = document.getElementById('color');
+const vColor  = document.getElementById('vColor');
+colorEl.addEventListener('input', () => {
+  params.color = colorEl.value;
+  vColor.textContent = params.color;
+  // Mix the picked color with a darker bottom for a tank gradient
+  const c = params.color;
+  tank.style.background = `linear-gradient(180deg, ${c} 0%, ${darken(c, 0.55)} 100%)`;
+});
+function darken(hex, amt) {
+  const n = parseInt(hex.slice(1), 16);
+  const r = Math.max(0, ((n >> 16) & 255) * (1 - amt));
+  const g = Math.max(0, ((n >> 8) & 255) * (1 - amt));
+  const b = Math.max(0, (n & 255) * (1 - amt));
+  return '#' + [r, g, b].map(v => Math.round(v).toString(16).padStart(2, '0')).join('');
+}
+
+const pathsEl = document.getElementById('paths');
+pathsEl.addEventListener('change', () => {
+  params.paths = pathsEl.checked;
+  pathSvg.classList.toggle('hidden', !params.paths);
+  if (params.paths) drawPaths();
+});
+
+// ─── Resize ──────────────────────────────────────────────────────────
+let resizeT;
+addEventListener('resize', () => {
+  clearTimeout(resizeT);
+  resizeT = setTimeout(() => {
+    measure();
+    rebuildFish(params.count);
+  }, 120);
+});
+
+// ─── Initial spawn ───────────────────────────────────────────────────
+rebuildFish(params.count);
+</script>
+
+</body>
+</html>
