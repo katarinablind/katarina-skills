@@ -1,0 +1,969 @@
+<!--
+  Gesture Classification Playground
+  ==================================
+  Research tool for measuring gesture accuracy and interaction
+  quality with MediaPipe hand tracking.
+
+  INTERACTION MODES:
+  - Free:       Watch all 6 gesture confidence scores live
+  - Guided:     Prompted gesture test → interference matrix
+  - Transition: Measure gesture-to-gesture switch time
+  - Pinch Slide: Pinch + slide toward/away from palm controls zoom
+  - Palm Zoom:  Hand openness controls zoom level
+  - Cursor:     Index fingertip moves a target circle
+  - Rotate:     Hand rotation (doorknob) = yaw for 3D
+  - Tilt:       Hand pitch (forward/backward) = pitch for 3D
+
+  NOTE ON POINTING AT CAMERA:
+  MediaPipe's z-depth estimates are relative and noisy. When a
+  finger points straight at the camera, tip and MCP overlap in
+  the x,y plane — the finger "disappears." Pointing must be
+  lateral or vertical to be detected reliably. The cursor mode
+  makes this explicit: it uses the fingertip's x,y screen
+  position, which only works when the finger extends sideways.
+
+  USAGE: npx serve . OR python3 -m http.server 8000
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gesture Classification Playground</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  :root{
+    --bg:#0a0a0a;--surface:#fff;--surface-muted:#f1f1ee;
+    --border:rgba(0,0,0,.06);--text:#141414;
+    --text-sec:rgba(20,20,20,.55);--text-dim:rgba(20,20,20,.38);
+    --td:#f4f2ec;--tdd:rgba(244,242,236,.45);
+    --emerald:rgb(16,185,129);--emerald-bg:rgba(16,185,129,.12);
+    --amber:#f59e0b;--blue:#3b82f6;--red:#ef4444;--purple:#8b5cf6;--cyan:#06b6d4;
+    --R:clamp(18px,2vw,26px);--Ri:clamp(10px,1.2vw,16px);--pill:999px;
+    --shadow:0 1px 2px rgba(15,18,24,.04),0 10px 28px rgba(15,18,24,.08);
+    --font:'DM Sans',-apple-system,BlinkMacSystemFont,system-ui,sans-serif;
+    --ease:cubic-bezier(.4,0,.2,1);
+  }
+  body{background:var(--bg);font-family:var(--font);-webkit-font-smoothing:antialiased;
+    color:var(--text);height:100vh;overflow:hidden;display:flex;
+    gap:clamp(10px,1.4vw,18px);padding:clamp(10px,2vh,24px) clamp(10px,2vw,24px)}
+
+  /* LEFT */
+  .col-main{flex:1;display:flex;flex-direction:column;gap:clamp(10px,1.4vw,18px);min-width:0}
+  .header{flex:0 0 auto;display:flex;align-items:baseline;justify-content:space-between;padding:0 4px}
+  .header-title{font-size:14px;font-weight:600;color:var(--td);letter-spacing:-.01em}
+  .header-desc{font-size:12px;color:var(--tdd);font-weight:400}
+
+  /* Video */
+  .video-panel{flex:1 1 0;min-height:0;position:relative;background:var(--surface-muted);
+    border-radius:var(--R);border:1px solid var(--border);box-shadow:var(--shadow);overflow:hidden;
+    display:flex;align-items:center;justify-content:center}
+  .video-wrap{position:absolute;inset:0}
+  video{display:block;width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
+  .video-dim{position:absolute;inset:0;background:rgba(0,0,0,.82);pointer-events:none;z-index:1}
+  #canvas{position:absolute;inset:0;width:100%;height:100%;transform:scaleX(-1);z-index:2}
+  #radarCanvas{position:absolute;bottom:14px;left:14px;pointer-events:none;z-index:3}
+  .video-badges{position:absolute;top:14px;left:14px;display:flex;gap:6px;z-index:5}
+  .badge{padding:5px 10px;font-size:10px;font-weight:600;letter-spacing:.02em;
+    color:rgba(255,255,255,.85);background:rgba(10,10,10,.5);
+    backdrop-filter:blur(16px) saturate(180%);-webkit-backdrop-filter:blur(16px) saturate(180%);
+    border:1px solid rgba(255,255,255,.1);border-radius:var(--pill);display:flex;align-items:center;gap:5px}
+  .badge .dot{width:5px;height:5px;border-radius:50%;background:var(--emerald);
+    box-shadow:0 0 6px rgba(16,185,129,.5);animation:pulse 2s ease-in-out infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+  .detected-badge{position:absolute;top:14px;right:14px;z-index:5;padding:5px 13px;
+    font-size:13px;font-weight:600;letter-spacing:-.01em;color:rgba(255,255,255,.9);
+    background:rgba(10,10,10,.5);backdrop-filter:blur(16px) saturate(180%);
+    -webkit-backdrop-filter:blur(16px) saturate(180%);border:1px solid rgba(255,255,255,.1);
+    border-radius:var(--pill);transition:color .18s var(--ease)}
+  .no-hand-msg{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+    font-size:13px;font-weight:500;color:var(--text-dim);opacity:0;transition:opacity .3s;
+    pointer-events:none;z-index:2}.no-hand-msg.visible{opacity:1}
+
+  /* Test prompt */
+  .test-prompt{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;
+    justify-content:center;background:rgba(241,241,238,.8);backdrop-filter:blur(6px);
+    -webkit-backdrop-filter:blur(6px);z-index:10;opacity:0;pointer-events:none;
+    transition:opacity .28s var(--ease)}.test-prompt.visible{opacity:1;pointer-events:auto}
+  .tp-gesture{font-size:clamp(28px,3.5vw,40px);font-weight:700;letter-spacing:-.02em;line-height:1.1}
+  .tp-sub{font-size:13px;font-weight:500;color:var(--text-sec);margin-top:4px}
+  .tp-countdown{font-size:56px;font-weight:700;color:var(--emerald);line-height:1;margin-top:8px}
+  .tp-progress{width:140px;height:3px;background:rgba(0,0,0,.06);border-radius:2px;margin-top:14px;overflow:hidden}
+  .tp-progress-fill{height:100%;background:var(--emerald);border-radius:2px;transition:width .1s linear}
+
+  /* Interaction overlay — shared canvas for zoom/cursor/rotate/tilt visuals */
+  .ix-overlay{position:absolute;inset:0;pointer-events:none;z-index:8;display:none}
+  .ix-overlay.active{display:block}
+
+  /* Timeline */
+  .timeline-panel{flex:0 0 72px;position:relative;background:#111214;border-radius:var(--R);
+    border:1px solid rgba(255,255,255,.05);box-shadow:var(--shadow);overflow:hidden}
+  .timeline-panel canvas{display:block;width:100%;height:100%}
+  .timeline-label{position:absolute;top:6px;left:12px;font-size:9px;font-weight:600;
+    letter-spacing:.1em;text-transform:uppercase;color:var(--tdd)}
+
+  /* SIDEBAR */
+  .sidebar{width:300px;min-width:300px;display:flex;flex-direction:column;gap:clamp(10px,1.4vw,18px)}
+  .sb-card{background:#111214;border-radius:var(--R);border:1px solid rgba(255,255,255,.05);
+    box-shadow:var(--shadow);padding:16px 18px;color:var(--td)}
+  .sb-card.scrollable{flex:1 1 0;min-height:0;overflow-y:auto;scrollbar-width:thin;
+    scrollbar-color:rgba(255,255,255,.06) transparent}
+  .sb-card.scrollable::-webkit-scrollbar{width:3px}
+  .sb-card.scrollable::-webkit-scrollbar-track{background:transparent}
+  .sb-card.scrollable::-webkit-scrollbar-thumb{background:rgba(255,255,255,.06);border-radius:2px}
+  .sb-label{font-size:10px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;
+    color:var(--tdd);margin-bottom:10px}.sb-label:not(:first-child){margin-top:16px}
+
+  /* Gesture bars */
+  .g-row{display:flex;align-items:center;gap:7px;margin-bottom:6px}.g-row:last-of-type{margin-bottom:0}
+  .g-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
+  .g-name{font-size:11px;font-weight:500;color:rgba(244,242,236,.55);width:72px;flex-shrink:0}
+  .g-track{flex:1;height:5px;background:rgba(255,255,255,.05);border-radius:3px;overflow:hidden}
+  .g-fill{height:100%;border-radius:3px;transition:width .1s var(--ease);min-width:1px}
+  .g-score{font-size:11px;font-weight:600;width:32px;text-align:right;flex-shrink:0;font-variant-numeric:tabular-nums}
+
+  /* Latency */
+  .lat-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px}
+  .lat-label{font-size:9px;font-weight:500;color:var(--tdd);letter-spacing:.04em;margin-bottom:1px}
+  .lat-val{font-size:16px;font-weight:700;color:var(--td);font-variant-numeric:tabular-nums;line-height:1.1}
+  .lat-unit{font-size:10px;font-weight:400;color:var(--tdd);margin-left:1px}
+
+  /* Mode pills — two rows */
+  .mode-group{display:flex;gap:4px;margin-bottom:4px}
+  .mode-btn{flex:1;padding:6px 2px;border:1px solid rgba(255,255,255,.08);border-radius:var(--pill);
+    background:transparent;color:rgba(244,242,236,.45);font-family:var(--font);font-size:9px;
+    font-weight:600;cursor:pointer;transition:all .18s var(--ease);text-align:center;white-space:nowrap}
+  .mode-btn:hover{border-color:rgba(255,255,255,.16);color:var(--td)}
+  .mode-btn.active{background:var(--emerald-bg);border-color:rgba(16,185,129,.25);color:var(--emerald)}
+
+  .test-action-btn{width:100%;padding:7px;border:1px solid rgba(255,255,255,.08);border-radius:var(--pill);
+    background:transparent;color:var(--td);font-family:var(--font);font-size:11px;font-weight:600;
+    cursor:pointer;transition:all .18s var(--ease);display:none}
+  .test-action-btn:hover{background:rgba(255,255,255,.05);border-color:rgba(255,255,255,.14)}
+
+  .test-status{font-size:10px;font-weight:500;color:var(--tdd);margin-top:6px;min-height:14px;line-height:1.4}
+  .test-progress{width:100%;height:2px;background:rgba(255,255,255,.04);border-radius:1px;
+    margin-top:5px;overflow:hidden;display:none}.test-progress.active{display:block}
+  .test-progress-fill{height:100%;background:var(--emerald);border-radius:1px;transition:width .1s linear}
+
+  .transition-controls{display:none;gap:5px;align-items:center;margin-bottom:6px}
+  .transition-controls.visible{display:flex}
+  .transition-controls label{font-size:9px;font-weight:600;color:var(--tdd);letter-spacing:.06em;text-transform:uppercase}
+  .transition-controls select{flex:1;padding:4px 6px;background:rgba(255,255,255,.05);
+    border:1px solid rgba(255,255,255,.08);border-radius:5px;color:var(--td);
+    font-family:var(--font);font-size:10px;font-weight:500;cursor:pointer}
+
+  /* Interaction stats panel */
+  .ix-panel{display:none;margin-top:4px}.ix-panel.active{display:block}
+  .ix-stats{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-top:6px}
+  .ix-stat-label{font-size:9px;font-weight:500;color:var(--tdd);letter-spacing:.04em;margin-bottom:1px}
+  .ix-stat-val{font-size:14px;font-weight:700;font-variant-numeric:tabular-nums;line-height:1.1}
+  .ix-badge{display:inline-block;font-size:10px;padding:2px 8px;border-radius:var(--pill);font-weight:600}
+  .ix-note{font-size:10px;color:var(--tdd);margin-top:6px;line-height:1.4;font-style:italic}
+
+  /* Matrix */
+  .matrix-table{width:100%;border-collapse:collapse;font-size:10px;font-weight:500;font-variant-numeric:tabular-nums}
+  .matrix-table th{padding:4px 2px;color:var(--tdd);font-weight:600;text-align:center;font-size:9px}
+  .matrix-table th:first-child{text-align:left}
+  .matrix-table td{padding:3px 2px;text-align:center;border-radius:2px}
+  .matrix-table td:first-child{text-align:left;font-weight:600}
+  .matrix-placeholder{font-size:11px;color:var(--tdd)}
+
+  /* Loading */
+  .loading-overlay{position:fixed;inset:0;background:var(--bg);display:flex;flex-direction:column;
+    align-items:center;justify-content:center;z-index:100;gap:12px;transition:opacity .4s var(--ease)}
+  .loading-overlay.hidden{opacity:0;pointer-events:none}
+  .spinner{width:24px;height:24px;border:2px solid rgba(255,255,255,.06);border-top-color:var(--emerald);
+    border-radius:50%;animation:spin .8s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .loading-text{font-size:12px;font-weight:500;color:var(--tdd)}
+</style>
+</head>
+<body>
+
+<div class="loading-overlay" id="loading">
+  <div class="spinner"></div>
+  <div class="loading-text" id="loadingText">Loading MediaPipe Hand Landmarker…</div>
+</div>
+
+<div class="col-main">
+  <div class="header">
+    <div class="header-title">Gesture Classification</div>
+    <div class="header-desc">Geometric rules on 21 landmarks · no ML classifier</div>
+  </div>
+  <div class="video-panel">
+    <div class="video-wrap">
+      <video id="video" autoplay playsinline></video>
+      <div class="video-dim"></div>
+      <canvas id="canvas"></canvas>
+      <canvas id="ixCanvas"></canvas>
+      <canvas id="radarCanvas" width="170" height="170"></canvas>
+      <div class="video-badges">
+        <div class="badge"><div class="dot"></div>Live</div>
+        <div class="badge" id="fpsBadge">— FPS</div>
+      </div>
+      <div class="detected-badge" id="detectedLabel">—</div>
+      <div class="no-hand-msg" id="noHandMsg">Show your hand to begin</div>
+      <div class="test-prompt" id="testPrompt">
+        <div class="tp-gesture" id="tpGesture"></div>
+        <div class="tp-sub" id="tpSub"></div>
+        <div class="tp-countdown" id="tpCountdown"></div>
+        <div class="tp-progress"><div class="tp-progress-fill" id="tpProgress"></div></div>
+      </div>
+    </div>
+  </div>
+  <div class="timeline-panel">
+    <canvas id="timelineCanvas"></canvas>
+    <div class="timeline-label">Confidence · 5s</div>
+  </div>
+</div>
+
+<div class="sidebar">
+  <div class="sb-card scrollable">
+    <div class="sb-label">Live Confidence</div>
+    <div id="gesturePanel"></div>
+
+    <div class="sb-label">Pipeline</div>
+    <div class="lat-grid">
+      <div><div class="lat-label">Total</div><div class="lat-val" id="latTotal">—<span class="lat-unit">ms</span></div></div>
+      <div><div class="lat-label">Avg (60f)</div><div class="lat-val" id="latAvg">—<span class="lat-unit">ms</span></div></div>
+      <div><div class="lat-label">Process</div><div class="lat-val" id="latProc">—<span class="lat-unit">ms</span></div></div>
+    </div>
+
+    <div class="sb-label">Mode</div>
+    <div class="mode-group">
+      <button class="mode-btn active" data-mode="free" onclick="setMode('free')">Free</button>
+      <button class="mode-btn" data-mode="guided" onclick="setMode('guided')">Guided</button>
+      <button class="mode-btn" data-mode="transition" onclick="setMode('transition')">Transition</button>
+    </div>
+    <div class="mode-group">
+      <button class="mode-btn" data-mode="pinchSlide" onclick="setMode('pinchSlide')">Pinch Slide</button>
+      <button class="mode-btn" data-mode="palmZoom" onclick="setMode('palmZoom')">Palm Zoom</button>
+      <button class="mode-btn" data-mode="cursor" onclick="setMode('cursor')">Cursor</button>
+    </div>
+    <div class="mode-group">
+      <button class="mode-btn" data-mode="rotate" onclick="setMode('rotate')">Rotate</button>
+      <button class="mode-btn" data-mode="tilt" onclick="setMode('tilt')">Tilt</button>
+    </div>
+
+    <div class="transition-controls" id="transRow">
+      <label>From</label><select id="transFrom"></select>
+      <label>To</label><select id="transTo"></select>
+    </div>
+    <div class="ix-panel" id="ixPanel">
+      <div class="ix-badge" id="ixBadge" style="color:var(--amber);background:rgba(245,158,11,.15)">—</div>
+      <div class="ix-stats" id="ixStats"></div>
+      <div class="ix-note" id="ixNote"></div>
+    </div>
+    <button class="test-action-btn" id="testStartBtn" onclick="startTest()">Start Test</button>
+    <div class="test-status" id="testStatus"></div>
+    <div class="test-progress" id="testProgressBar"><div class="test-progress-fill" id="testProgressFill"></div></div>
+
+    <div class="sb-label">Interference Matrix</div>
+    <div id="matrixContainer" style="display:none"><table class="matrix-table" id="matrixTable"></table></div>
+    <div class="matrix-placeholder" id="matrixPlaceholder">Run guided test to generate</div>
+  </div>
+</div>
+
+<script type="module">
+import { HandLandmarker, FilesetResolver }
+  from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/vision_bundle.mjs";
+
+// ═══════════════════════════════════════════════════════
+//  CONSTANTS
+// ═══════════════════════════════════════════════════════
+
+const GESTURES = [
+  { id:'palm',  name:'Open Palm',   color:'#10b981' },
+  { id:'fist',  name:'Closed Fist', color:'#ef4444' },
+  { id:'pinch', name:'Pinch',       color:'#f59e0b' },
+  { id:'point', name:'Point',       color:'#3b82f6' },
+  { id:'peace', name:'Peace',       color:'#8b5cf6' },
+  { id:'thumb', name:'Thumbs Up',   color:'#06b6d4' },
+];
+const CONNS = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],
+  [0,9],[9,10],[10,11],[11,12],[0,13],[13,14],[14,15],[15,16],
+  [0,17],[17,18],[18,19],[19,20],[5,9],[9,13],[13,17]];
+
+const IX_MODES = ['pinchSlide','palmZoom','cursor','rotate','tilt'];
+
+// ═══════════════════════════════════════════════════════
+//  GEOMETRY HELPERS
+// ═══════════════════════════════════════════════════════
+
+function dist(a,b){return Math.sqrt((a.x-b.x)**2+(a.y-b.y)**2)}
+function smoothstep(lo,hi,x){const t=Math.max(0,Math.min(1,(x-lo)/(hi-lo)));return t*t*(3-2*t)}
+function lerp(a,b,t){return a+(b-a)*t}
+function clamp(v,lo,hi){return Math.max(lo,Math.min(hi,v))}
+function angleDeg(a,b){return Math.atan2(b.y-a.y,b.x-a.x)*180/Math.PI}
+
+// ═══════════════════════════════════════════════════════
+//  GESTURE CLASSIFICATION
+// ═══════════════════════════════════════════════════════
+
+function fingerExt(lm,tip,pip){return smoothstep(.85,1.35,dist(lm[tip],lm[0])/(dist(lm[pip],lm[0])+1e-6))}
+function thumbExt(lm){return smoothstep(.8,1.6,dist(lm[4],lm[5])/(dist(lm[3],lm[5])+1e-6))}
+function handSize(lm){return dist(lm[0],lm[9])+1e-6}
+function fingerSpread(lm){const hs=handSize(lm);let t=0;for(const[a,b]of[[8,12],[12,16],[16,20]])t+=dist(lm[a],lm[b])/hs;return smoothstep(.15,.55,t/3)}
+function indexProjection(lm){return dist(lm[8],lm[5])/handSize(lm)}
+
+function classifyGestures(lm){
+  const e={thumb:thumbExt(lm),index:fingerExt(lm,8,6),middle:fingerExt(lm,12,10),ring:fingerExt(lm,16,14),pinky:fingerExt(lm,20,18)};
+  const c={};for(const k in e)c[k]=1-e[k];
+  const hs=handSize(lm);
+  const pinchClose=smoothstep(.45,.12,dist(lm[4],lm[8])/hs);
+  const notFist=smoothstep(.1,.4,Math.max(e.middle,e.ring,e.pinky));
+  const idxProj=smoothstep(.3,.7,indexProjection(lm));
+  const thumbUp=smoothstep(0,-.12,lm[4].y-lm[2].y);
+  return{
+    palm:Math.min(e.thumb,e.index,e.middle,e.ring,e.pinky)*fingerSpread(lm),
+    fist:Math.min(c.thumb,c.index,c.middle,c.ring,c.pinky),
+    pinch:pinchClose*notFist,
+    point:e.index*idxProj*Math.min(c.middle,c.ring,c.pinky),
+    peace:Math.min(e.index,e.middle)*Math.min(c.ring,c.pinky),
+    thumb:e.thumb*thumbUp*Math.min(c.index,c.middle,c.ring,c.pinky),
+  };
+}
+function dominant(sc){let b=null,bs=-1;for(const g of GESTURES)if(sc[g.id]>bs){bs=sc[g.id];b=g}return{gesture:b,score:bs}}
+
+// ═══════════════════════════════════════════════════════
+//  INTERACTION TRACKERS
+// ═══════════════════════════════════════════════════════
+
+/** Pinch Slide: maintain pinch, slide meeting point toward/away from palm.
+ *  Projects pinch midpoint onto the wrist→middle-MCP axis.
+ *  This gives a stable 0–1 value based on anatomical position,
+ *  no calibration needed — the hand's own geometry defines the range. */
+class PinchSlide {
+  constructor(){this.val=.5;this.smooth=.5;this.raw=0;this.pinchGap=0;this.vel=0;this.prev=0;this.dir='idle';this.cal=true}
+  update(lm){
+    // Project pinch midpoint onto wrist→middle-MCP axis
+    const mid={x:(lm[4].x+lm[8].x)/2,y:(lm[4].y+lm[8].y)/2};
+    const ax=lm[9].x-lm[0].x, ay=lm[9].y-lm[0].y; // hand axis vector
+    const px=mid.x-lm[0].x, py=mid.y-lm[0].y;       // pinch relative to wrist
+    const dot=px*ax+py*ay;
+    const lenSq=ax*ax+ay*ay;
+    const t=lenSq>0?dot/lenSq:0; // projection parameter: 0=wrist, 1=MCP
+    // Map anatomical range [0.3 .. 1.1] to [0 .. 1]
+    this.raw=t;
+    this.val=clamp((t-0.3)/0.8,0,1);
+    this.pinchGap=dist(lm[4],lm[8])/handSize(lm);
+    const delta=this.val-this.prev;this.prev=this.val;
+    this.vel=delta;
+    this.smooth+=(this.val-this.smooth)*.3;
+    this.dir=delta>.005?'out':delta<-.005?'in':'idle';
+  }
+  get value(){return this.smooth}
+  reset(){this.val=.5;this.smooth=.5;this.prev=0;this.dir='idle'}
+}
+
+/** Palm Zoom: average finger extension → scale. Fist=zoomed in, open=out */
+class PalmZoom {
+  constructor(){this.scale=1;this.smooth=1;this.openness=0;this.dir='idle';this.prev=0}
+  update(lm){
+    const exts=[fingerExt(lm,8,6),fingerExt(lm,12,10),fingerExt(lm,16,14),fingerExt(lm,20,18)];
+    this.openness=exts.reduce((a,b)=>a+b,0)/4;
+    // Closed (0) → scale 3, Open (1) → scale 0.5
+    this.scale=clamp(3-this.openness*2.5,.3,4);
+    this.smooth+=(this.scale-this.smooth)*.25;
+    const delta=this.openness-this.prev;this.prev=this.openness;
+    this.dir=delta<-.01?'in':delta>.01?'out':'idle';
+  }
+  reset(){this.scale=1;this.smooth=1;this.dir='idle';this.prev=0}
+}
+
+/** Cursor: index fingertip delta → amplified dot position.
+ *  Small finger movements produce larger dot movements.
+ *  Dot lives in its own space, not on the fingertip. */
+class Cursor {
+  constructor(){this.cx=.5;this.cy=.5;this.sx=.5;this.sy=.5;this.refX=null;this.refY=null;this.active=false;this.pointConf=0;this.gain=3.5}
+  update(lm,scores){
+    this.pointConf=scores.point;
+    const fx=lm[8].x,fy=lm[8].y;
+    if(this.refX===null){this.refX=fx;this.refY=fy}
+    // Amplified delta from reference
+    const dx=(fx-this.refX)*this.gain;
+    const dy=(fy-this.refY)*this.gain;
+    this.cx=clamp(.5+dx,0,1);
+    this.cy=clamp(.5+dy,0,1);
+    this.sx+=(this.cx-this.sx)*.35;
+    this.sy+=(this.cy-this.sy)*.35;
+    this.active=true;
+    // Slowly drift reference toward current to prevent hitting edges
+    this.refX+=(fx-this.refX)*.008;
+    this.refY+=(fy-this.refY)*.008;
+  }
+  reset(){this.active=false;this.sx=.5;this.sy=.5;this.refX=null;this.refY=null}
+}
+
+/** Rotate: angle from palm center to midpoint of thumb+index tips */
+class Rotate {
+  constructor(){this.angle=0;this.smoothAngle=0;this.refAngle=null;this.delta=0;this.vel=0;this.hist=[]}
+  calibrate(lm){
+    const center={x:(lm[0].x+lm[9].x)/2,y:(lm[0].y+lm[9].y)/2};
+    const mid={x:(lm[4].x+lm[8].x)/2,y:(lm[4].y+lm[8].y)/2};
+    this.refAngle=angleDeg(center,mid);this.hist=[];this.delta=0;
+  }
+  update(lm){
+    const center={x:(lm[0].x+lm[9].x)/2,y:(lm[0].y+lm[9].y)/2};
+    const mid={x:(lm[4].x+lm[8].x)/2,y:(lm[4].y+lm[8].y)/2};
+    this.angle=angleDeg(center,mid);
+    if(this.refAngle===null)this.refAngle=this.angle;
+    this.delta=this.angle-this.refAngle;
+    // Normalize to -180..180
+    while(this.delta>180)this.delta-=360;
+    while(this.delta<-180)this.delta+=360;
+    this.smoothAngle+=(this.delta-this.smoothAngle)*.3;
+    this.hist.push(this.delta);if(this.hist.length>5)this.hist.shift();
+    this.vel=this.hist.length>1?(this.hist[this.hist.length-1]-this.hist[0])/(this.hist.length-1):0;
+  }
+  reset(){this.refAngle=null;this.delta=0;this.smoothAngle=0;this.hist=[]}
+}
+
+/** Tilt: pitch (up/down) — measures how much the hand tilts
+ *  forward or backward relative to upright neutral.
+ *  Neutral = fingers pointing up (0°).
+ *  Positive = tilted forward/down, Negative = tilted backward/up.
+ *  Maps to pitch in a 3D environment. */
+class Tilt {
+  constructor(){this.angle=0;this.smooth=0;this.refAngle=null;this.delta=0;this.vel=0;this.hist=[]}
+  update(lm){
+    // Angle of wrist→middle-MCP vs vertical.
+    // In screen coords: straight up = -90° from atan2, so pitch = angle + 90
+    const raw=angleDeg(lm[0],lm[9]);
+    this.angle=raw;
+    // Convert to pitch: 0° when fingers point straight up
+    const pitch=raw+90;
+    if(this.refAngle===null)this.refAngle=pitch;
+    this.delta=pitch-this.refAngle;
+    // Normalize -180..180
+    while(this.delta>180)this.delta-=360;
+    while(this.delta<-180)this.delta+=360;
+    this.smooth+=(this.delta-this.smooth)*.25;
+    this.hist.push(this.delta);if(this.hist.length>6)this.hist.shift();
+    this.vel=this.hist.length>1?(this.hist[this.hist.length-1]-this.hist[0])/(this.hist.length-1):0;
+  }
+  reset(){this.smooth=0;this.refAngle=null;this.delta=0;this.hist=[]}
+}
+
+// ═══════════════════════════════════════════════════════
+//  LATENCY / TIMELINE / GUIDED / TRANSITION
+// ═══════════════════════════════════════════════════════
+
+class LatencyTracker{
+  constructor(n=60){this.n=n;this.s=[]}
+  record(p,r){this.s.push({processing:p,render:r,total:p+r});if(this.s.length>this.n)this.s.shift()}
+  get current(){return this.s[this.s.length-1]||null}
+  get avg(){return this.s.length?this.s.reduce((a,v)=>a+v.total,0)/this.s.length:0}
+}
+
+class TimelineHistory{
+  constructor(){this.d=[]}
+  push(sc){this.d.push({t:performance.now(),scores:{...sc}});const cut=performance.now()-5000;while(this.d.length&&this.d[0].t<cut)this.d.shift()}
+}
+
+class GuidedTest{
+  constructor(){this.state='idle';this.gi=0;this.hold=3000;this.rs=0;this.recs={};this.cur=null;this.ps=0;this.pd=2000}
+  start(){this.state='prompting';this.gi=0;this.recs={};this.cur=GESTURES[0];this.ps=performance.now()}
+  update(sc){
+    if(this.state==='idle'||this.state==='done')return null;const now=performance.now();
+    if(this.state==='prompting'){const el=now-this.ps;if(el>=this.pd){this.state='recording';this.rs=now;this.recs[this.cur.id]=[]}
+      return{type:'prompt',gesture:this.cur,countdown:Math.ceil((this.pd-el)/1000)}}
+    if(this.state==='recording'){const el=now-this.rs;this.recs[this.cur.id].push({...sc});
+      if(el>=this.hold){this.gi++;if(this.gi>=GESTURES.length){this.state='done';return{type:'done',matrix:this.matrix()}}
+        this.cur=GESTURES[this.gi];this.state='prompting';this.ps=now}
+      return{type:'recording',gesture:this.cur,progress:Math.min(1,el/this.hold),gi:this.gi,total:GESTURES.length}}
+    return null;
+  }
+  matrix(){const m={};for(const g of GESTURES){m[g.id]={};const s=this.recs[g.id]||[];
+    for(const c of GESTURES)m[g.id][c.id]=s.length?s.reduce((a,v)=>a+v[c.id],0)/s.length:0}return m}
+}
+
+class TransitionTest{
+  constructor(){this.state='idle';this.from=null;this.to=null;this.th=.55;this.t0=0;this.data=[];this.result=null}
+  start(fi,ti){this.from=GESTURES.find(g=>g.id===fi);this.to=GESTURES.find(g=>g.id===ti);this.state='waitStart';this.data=[];this.result=null}
+  update(sc){
+    if(this.state==='idle'||this.state==='done')return null;
+    if(this.state==='waitStart'){if(sc[this.from.id]>=this.th){this.state='waitEnd';this.t0=performance.now();this.data=[]}return{type:'waitStart',gesture:this.from}}
+    if(this.state==='waitEnd'){this.data.push({t:performance.now(),...sc});
+      if(sc[this.to.id]>=this.th){const ms=performance.now()-this.t0;this.state='done';
+        let pk={gesture:null,score:0};for(const s of this.data)for(const g of GESTURES){if(g.id===this.from.id||g.id===this.to.id)continue;if(s[g.id]>pk.score)pk={gesture:g,score:s[g.id]}}
+        this.result={from:this.from,to:this.to,ms:ms.toFixed(0),frames:this.data.length,peak:pk};return{type:'done',result:this.result}}
+      if(performance.now()-this.t0>10000){this.state='done';return{type:'timeout'}}
+      return{type:'waitEnd',gesture:this.to,elapsed:performance.now()-this.t0}}
+    return null;
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+//  DOM
+// ═══════════════════════════════════════════════════════
+
+const video=document.getElementById('video'),canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');
+const ixCanvas=document.getElementById('ixCanvas'),ixCtx=ixCanvas.getContext('2d');
+const radarCanvas=document.getElementById('radarCanvas'),rCtx=radarCanvas.getContext('2d');
+const tlCanvas=document.getElementById('timelineCanvas'),tlCtx=tlCanvas.getContext('2d');
+const loadEl=document.getElementById('loading'),loadTxt=document.getElementById('loadingText');
+const noHand=document.getElementById('noHandMsg'),detLabel=document.getElementById('detectedLabel');
+const fpsBadge=document.getElementById('fpsBadge');
+const elLatT=document.getElementById('latTotal'),elLatA=document.getElementById('latAvg'),elLatP=document.getElementById('latProc');
+const tPrompt=document.getElementById('testPrompt'),tpG=document.getElementById('tpGesture');
+const tpS=document.getElementById('tpSub'),tpC=document.getElementById('tpCountdown'),tpP=document.getElementById('tpProgress');
+const tStatus=document.getElementById('testStatus'),tBar=document.getElementById('testProgressBar'),tFill=document.getElementById('testProgressFill');
+const tBtn=document.getElementById('testStartBtn');
+const transRow=document.getElementById('transRow'),transFr=document.getElementById('transFrom'),transTo=document.getElementById('transTo');
+const ixPanel=document.getElementById('ixPanel'),ixBadge=document.getElementById('ixBadge'),ixStats=document.getElementById('ixStats'),ixNote=document.getElementById('ixNote');
+const matC=document.getElementById('matrixContainer'),matT=document.getElementById('matrixTable'),matP=document.getElementById('matrixPlaceholder');
+
+// ═══════════════════════════════════════════════════════
+//  BUILD UI
+// ═══════════════════════════════════════════════════════
+
+const gPanel=document.getElementById('gesturePanel'),gEls={};
+for(const g of GESTURES){const r=document.createElement('div');r.className='g-row';
+  r.innerHTML=`<div class="g-dot" style="color:${g.color};background:${g.color}"></div><div class="g-name">${g.name}</div><div class="g-track"><div class="g-fill" style="background:${g.color};width:0%"></div></div><div class="g-score" style="color:${g.color}">—</div>`;
+  gPanel.appendChild(r);gEls[g.id]={fill:r.querySelector('.g-fill'),score:r.querySelector('.g-score')}}
+for(const g of GESTURES){transFr.innerHTML+=`<option value="${g.id}">${g.name}</option>`;transTo.innerHTML+=`<option value="${g.id}">${g.name}</option>`}
+transTo.selectedIndex=1;
+
+// Size ix canvas
+function sizeIxCanvas(){ixCanvas.width=canvas.width;ixCanvas.height=canvas.height;
+  ixCanvas.style.cssText='position:absolute;inset:0;width:100%;height:100%;transform:scaleX(-1);pointer-events:none;z-index:8'}
+// ═══════════════════════════════════════════════════════
+//  STATE
+// ═══════════════════════════════════════════════════════
+
+const lat=new LatencyTracker(60),tl=new TimelineHistory();
+const guided=new GuidedTest(),trans=new TransitionTest();
+const pzoom=new PinchSlide(),palmz=new PalmZoom(),cursor=new Cursor(),rot=new Rotate(),tilt=new Tilt();
+let mode='free',fc=0,lastFps=performance.now(),fps=0,scores={};
+
+// ═══════════════════════════════════════════════════════
+//  MODE SWITCHING
+// ═══════════════════════════════════════════════════════
+
+window.setMode=function(m){
+  mode=m;
+  document.querySelectorAll('.mode-btn[data-mode]').forEach(b=>b.classList.toggle('active',b.dataset.mode===m));
+  const isTest=m==='guided'||m==='transition';
+  const isIx=IX_MODES.includes(m);
+  tBtn.style.display=isTest?'block':'none';
+  transRow.classList.toggle('visible',m==='transition');
+  ixPanel.classList.toggle('active',isIx);
+  tStatus.textContent='';tBar.classList.remove('active');tPrompt.classList.remove('visible');
+  guided.state='idle';trans.state='idle';
+  pzoom.reset();palmz.reset();cursor.reset();rot.reset();tilt.reset();
+  if(m==='guided')tBtn.textContent='Start Guided Test';
+  else if(m==='transition')tBtn.textContent='Start Transition Test';
+
+  // Set up ix panel notes
+  if(m==='cursor')ixNote.textContent='Finger movement amplified 3.5× onto a separate target. Small movements, big effect.';
+  else if(m==='pinchSlide')ixNote.textContent='Hold pinch, curl fingers in or extend out. Position along the hand axis = slider value.';
+  else if(m==='palmZoom')ixNote.textContent='Open palm = zoom out, closed fist = zoom in. No pinch needed.';
+  else if(m==='rotate')ixNote.textContent='Rotate hand like a doorknob. Calibrates on detection. Maps to yaw in 3D.';
+  else if(m==='tilt')ixNote.textContent='Tilt hand forward/backward. Calibrates on detection. Maps to pitch in 3D.';
+  else ixNote.textContent='';
+};
+
+window.startTest=function(){
+  if(mode==='guided'){guided.start();tBtn.style.display='none';tBar.classList.add('active')}
+  else if(mode==='transition'){if(transFr.value===transTo.value){tStatus.textContent='Pick different gestures';return}
+    trans.start(transFr.value,transTo.value);tBtn.style.display='none';tBar.classList.add('active')}
+};
+
+// ═══════════════════════════════════════════════════════
+//  DRAWING: HAND
+// ═══════════════════════════════════════════════════════
+
+function drawHand(lm,sc){
+  const w=canvas.width,h=canvas.height,c=dominant(sc).gesture?.color||'#fff';
+  // Connections — brighter against dark overlay
+  ctx.lineWidth=2.5;ctx.strokeStyle=c;ctx.globalAlpha=.45;
+  for(const[a,b]of CONNS){ctx.beginPath();ctx.moveTo(lm[a].x*w,lm[a].y*h);ctx.lineTo(lm[b].x*w,lm[b].y*h);ctx.stroke()}
+  // Landmarks — bigger, with glow
+  for(let i=0;i<lm.length;i++){const x=lm[i].x*w,y=lm[i].y*h;
+    const isTip=(i===4||i===8||i===12||i===16||i===20);
+    const r=isTip?6:4;
+    // Outer glow
+    ctx.globalAlpha=.15;ctx.beginPath();ctx.arc(x,y,r+5,0,Math.PI*2);ctx.fillStyle=c;ctx.fill();
+    // Main dot
+    ctx.globalAlpha=.95;ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);ctx.fillStyle=c;ctx.fill();
+    // Bright center
+    ctx.globalAlpha=.7;ctx.beginPath();ctx.arc(x,y,r*.4,0,Math.PI*2);ctx.fillStyle='#fff';ctx.fill()}
+  ctx.globalAlpha=1;
+}
+
+// ═══════════════════════════════════════════════════════
+//  DRAWING: INTERACTION OVERLAY
+// ═══════════════════════════════════════════════════════
+
+function drawIxOverlay(lm){
+  const w=ixCanvas.width,h=ixCanvas.height;
+  ixCtx.clearRect(0,0,w,h);
+  if(!IX_MODES.includes(mode))return;
+
+  if(mode==='pinchSlide'){
+    const v=pzoom.value; // 0–1
+    const col='#f59e0b';
+    const cx=w/2,cy=h/2;
+    const trackW=w*.6,trackH=6;
+    const tx=cx-trackW/2,ty=cy;
+
+    // Track background
+    ixCtx.globalAlpha=.1;ixCtx.fillStyle=col;
+    ixCtx.beginPath();ixCtx.roundRect(tx,ty-trackH/2,trackW,trackH,3);ixCtx.fill();
+    // Filled portion
+    ixCtx.globalAlpha=.35;
+    ixCtx.beginPath();ixCtx.roundRect(tx,ty-trackH/2,trackW*v,trackH,3);ixCtx.fill();
+    // Tick marks at 0%, 25%, 50%, 75%, 100%
+    ixCtx.globalAlpha=.12;ixCtx.strokeStyle=col;ixCtx.lineWidth=1;
+    for(let t=0;t<=1;t+=.25){const x=tx+trackW*t;ixCtx.beginPath();ixCtx.moveTo(x,ty-12);ixCtx.lineTo(x,ty+12);ixCtx.stroke()}
+    // Thumb
+    const thumbX=tx+trackW*v;
+    ixCtx.globalAlpha=.15;ixCtx.beginPath();ixCtx.arc(thumbX,ty,16,0,Math.PI*2);ixCtx.fillStyle=col;ixCtx.fill();
+    ixCtx.globalAlpha=.8;ixCtx.beginPath();ixCtx.arc(thumbX,ty,8,0,Math.PI*2);ixCtx.fillStyle=col;ixCtx.fill();
+    ixCtx.globalAlpha=.9;ixCtx.beginPath();ixCtx.arc(thumbX,ty,3,0,Math.PI*2);ixCtx.fillStyle='#fff';ixCtx.fill();
+    // Value label
+    ixCtx.globalAlpha=.8;ixCtx.font='700 16px "DM Sans",sans-serif';ixCtx.fillStyle=col;
+    ixCtx.textAlign='center';ixCtx.textBaseline='top';
+    ixCtx.fillText(`${(v*100).toFixed(0)}%`,thumbX,ty+22);
+    // Min/max labels
+    ixCtx.globalAlpha=.3;ixCtx.font='500 10px "DM Sans",sans-serif';
+    ixCtx.textAlign='left';ixCtx.fillText('CLOSE',tx,ty+22);
+    ixCtx.textAlign='right';ixCtx.fillText('FAR',tx+trackW,ty+22);
+    ixCtx.globalAlpha=1;
+  }
+
+  if(mode==='palmZoom'){
+    const s=palmz.smooth;
+    const col='#10b981';
+    const cx=w/2,cy=h/2,baseR=60;
+    // Crosshairs
+    ixCtx.strokeStyle=col;ixCtx.globalAlpha=.1;ixCtx.lineWidth=1;
+    ixCtx.beginPath();ixCtx.moveTo(0,cy);ixCtx.lineTo(w,cy);ixCtx.stroke();
+    ixCtx.beginPath();ixCtx.moveTo(cx,0);ixCtx.lineTo(cx,h);ixCtx.stroke();
+    // Target circle
+    const r=baseR*s;
+    ixCtx.globalAlpha=.15;ixCtx.beginPath();ixCtx.arc(cx,cy,r,0,Math.PI*2);
+    ixCtx.fillStyle=col;ixCtx.fill();
+    ixCtx.globalAlpha=.5;ixCtx.lineWidth=2;ixCtx.beginPath();ixCtx.arc(cx,cy,r,0,Math.PI*2);
+    ixCtx.strokeStyle=col;ixCtx.stroke();
+    ixCtx.globalAlpha=.4;ixCtx.beginPath();ixCtx.arc(cx,cy,8,0,Math.PI*2);ixCtx.fillStyle=col;ixCtx.fill();
+    ixCtx.globalAlpha=.8;ixCtx.font='700 14px "DM Sans",sans-serif';ixCtx.fillStyle=col;
+    ixCtx.textAlign='center';ixCtx.textBaseline='top';
+    ixCtx.fillText(`${s.toFixed(2)}\u00d7`,cx,cy+r+8);
+    ixCtx.globalAlpha=1;
+  }
+
+  if(mode==='cursor'){
+    const col='#3b82f6';
+    // Target zone — right half of overlay
+    const zoneX=w*.55,zoneY=h*.1,zoneW=w*.4,zoneH=h*.8;
+    // Zone border
+    ixCtx.globalAlpha=.08;ixCtx.strokeStyle=col;ixCtx.lineWidth=1;
+    ixCtx.strokeRect(zoneX,zoneY,zoneW,zoneH);
+    // Zone label
+    ixCtx.globalAlpha=.25;ixCtx.font='500 10px "DM Sans",sans-serif';ixCtx.fillStyle=col;
+    ixCtx.textAlign='left';ixCtx.textBaseline='top';
+    ixCtx.fillText('CURSOR TARGET',zoneX+8,zoneY+6);
+    // Crosshairs in zone center
+    const zcx=zoneX+zoneW/2,zcy=zoneY+zoneH/2;
+    ixCtx.globalAlpha=.06;ixCtx.beginPath();ixCtx.moveTo(zoneX,zcy);ixCtx.lineTo(zoneX+zoneW,zcy);ixCtx.stroke();
+    ixCtx.beginPath();ixCtx.moveTo(zcx,zoneY);ixCtx.lineTo(zcx,zoneY+zoneH);ixCtx.stroke();
+    // Dot position mapped into zone
+    const dx=zoneX+cursor.sx*zoneW;
+    const dy=zoneY+cursor.sy*zoneH;
+    const conf=cursor.pointConf;
+    const r=14;
+    // Outer glow
+    ixCtx.globalAlpha=.12;ixCtx.beginPath();ixCtx.arc(dx,dy,r+10,0,Math.PI*2);
+    ixCtx.fillStyle=col;ixCtx.fill();
+    // Main ring
+    ixCtx.globalAlpha=.7;ixCtx.lineWidth=2.5;ixCtx.beginPath();ixCtx.arc(dx,dy,r,0,Math.PI*2);
+    ixCtx.strokeStyle=col;ixCtx.stroke();
+    // Center dot
+    ixCtx.globalAlpha=.9;ixCtx.beginPath();ixCtx.arc(dx,dy,4,0,Math.PI*2);
+    ixCtx.fillStyle=col;ixCtx.fill();
+    // Coords
+    ixCtx.globalAlpha=.5;ixCtx.font='600 11px "DM Sans",sans-serif';ixCtx.fillStyle=col;
+    ixCtx.textAlign='left';ixCtx.textBaseline='top';
+    ixCtx.fillText(`${cursor.sx.toFixed(2)}, ${cursor.sy.toFixed(2)}`,dx+r+8,dy-6);
+    // Gain label
+    ixCtx.globalAlpha=.3;ixCtx.font='500 10px "DM Sans",sans-serif';
+    ixCtx.textAlign='right';ixCtx.textBaseline='bottom';
+    ixCtx.fillText(`${cursor.gain.toFixed(1)}× gain`,zoneX+zoneW-8,zoneY+zoneH-6);
+    ixCtx.globalAlpha=1;
+  }
+
+  if(mode==='rotate'){
+    const cx=w/2,cy=h/2,R=80;
+    const a=rot.smoothAngle*Math.PI/180;
+    const col='#8b5cf6';
+    // Arc showing rotation
+    ixCtx.globalAlpha=.12;ixCtx.beginPath();ixCtx.arc(cx,cy,R,0,Math.PI*2);
+    ixCtx.strokeStyle=col;ixCtx.lineWidth=1;ixCtx.stroke();
+    // Reference line (0°)
+    ixCtx.globalAlpha=.15;ixCtx.beginPath();ixCtx.moveTo(cx,cy);ixCtx.lineTo(cx+R,cy);ixCtx.stroke();
+    // Current angle line
+    ixCtx.globalAlpha=.7;ixCtx.lineWidth=2.5;ixCtx.beginPath();
+    ixCtx.moveTo(cx,cy);ixCtx.lineTo(cx+Math.cos(a)*R,cy+Math.sin(a)*R);ixCtx.strokeStyle=col;ixCtx.stroke();
+    // Arc from 0 to angle
+    ixCtx.globalAlpha=.15;ixCtx.beginPath();ixCtx.moveTo(cx,cy);ixCtx.arc(cx,cy,R/2,0,a,a<0);ixCtx.closePath();
+    ixCtx.fillStyle=col;ixCtx.fill();
+    // Label
+    ixCtx.globalAlpha=.8;ixCtx.font='700 16px "DM Sans",sans-serif';ixCtx.fillStyle=col;
+    ixCtx.textAlign='center';ixCtx.textBaseline='top';
+    ixCtx.fillText(`${rot.smoothAngle.toFixed(1)}°`,cx,cy+R+10);
+    ixCtx.globalAlpha=1;
+  }
+
+  if(mode==='tilt'){
+    const cx=w/2,cy=h/2,armLen=90;
+    const pitch=tilt.smooth; // degrees: + = forward/down, - = backward/up
+    const col='#06b6d4';
+
+    // Vertical reference line (neutral = straight up)
+    ixCtx.globalAlpha=.1;ixCtx.strokeStyle=col;ixCtx.lineWidth=1;
+    ixCtx.beginPath();ixCtx.moveTo(cx,cy+armLen);ixCtx.lineTo(cx,cy-armLen);ixCtx.stroke();
+    // Horizon line
+    ixCtx.beginPath();ixCtx.moveTo(cx-armLen*.6,cy);ixCtx.lineTo(cx+armLen*.6,cy);ixCtx.stroke();
+
+    // Pitch arc (pivot at bottom, arm swings up)
+    const a=pitch*Math.PI/180;
+    // Reference line (straight up from pivot)
+    ixCtx.globalAlpha=.15;ixCtx.strokeStyle=col;ixCtx.lineWidth=1;
+    ixCtx.beginPath();ixCtx.moveTo(cx,cy+20);ixCtx.lineTo(cx,cy-armLen);ixCtx.stroke();
+    // Current pitch arm
+    const tipX=cx+Math.sin(a)*armLen;
+    const tipY=cy+20-Math.cos(a)*armLen;
+    ixCtx.globalAlpha=.7;ixCtx.lineWidth=2.5;ixCtx.strokeStyle=col;
+    ixCtx.beginPath();ixCtx.moveTo(cx,cy+20);ixCtx.lineTo(tipX,tipY);ixCtx.stroke();
+    // Arc from 0 to pitch
+    ixCtx.globalAlpha=.12;ixCtx.beginPath();ixCtx.moveTo(cx,cy+20);
+    ixCtx.arc(cx,cy+20,armLen*.4,-Math.PI/2,-Math.PI/2+a,a<0);ixCtx.closePath();
+    ixCtx.fillStyle=col;ixCtx.fill();
+    // Pivot dot
+    ixCtx.globalAlpha=.5;ixCtx.beginPath();ixCtx.arc(cx,cy+20,4,0,Math.PI*2);ixCtx.fillStyle=col;ixCtx.fill();
+    // Tip dot
+    ixCtx.globalAlpha=.6;ixCtx.beginPath();ixCtx.arc(tipX,tipY,5,0,Math.PI*2);ixCtx.fillStyle=col;ixCtx.fill();
+    // Label
+    ixCtx.globalAlpha=.8;ixCtx.font='700 16px "DM Sans",sans-serif';ixCtx.fillStyle=col;
+    ixCtx.textAlign='center';ixCtx.textBaseline='top';
+    ixCtx.fillText(`${pitch.toFixed(1)}°`,cx,cy+armLen*.6+20);
+    // Direction label
+    ixCtx.font='500 11px "DM Sans",sans-serif';ixCtx.globalAlpha=.5;
+    ixCtx.fillText(Math.abs(pitch)<5?'Neutral':pitch>0?'Forward':'Backward',cx,cy+armLen*.6+38);
+    ixCtx.globalAlpha=1;
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+//  DRAWING: RADAR
+// ═══════════════════════════════════════════════════════
+
+function drawRadar(sc){
+  const C=radarCanvas,cx=C.width/2,cy=C.height/2,R=58,n=GESTURES.length;
+  rCtx.clearRect(0,0,C.width,C.height);
+  rCtx.beginPath();rCtx.arc(cx,cy,R+14,0,Math.PI*2);rCtx.fillStyle='rgba(0,0,0,.3)';rCtx.fill();
+  for(let ring=.25;ring<=1;ring+=.25){rCtx.beginPath();
+    for(let i=0;i<=n;i++){const a=(Math.PI*2*(i%n))/n-Math.PI/2;const x=cx+Math.cos(a)*R*ring,y=cy+Math.sin(a)*R*ring;i===0?rCtx.moveTo(x,y):rCtx.lineTo(x,y)}
+    rCtx.strokeStyle='rgba(255,255,255,.06)';rCtx.lineWidth=1;rCtx.stroke()}
+  for(let i=0;i<n;i++){const a=(Math.PI*2*i)/n-Math.PI/2;
+    rCtx.beginPath();rCtx.moveTo(cx,cy);rCtx.lineTo(cx+Math.cos(a)*R,cy+Math.sin(a)*R);rCtx.strokeStyle='rgba(255,255,255,.04)';rCtx.stroke();
+    rCtx.font='600 8px "DM Sans",sans-serif';rCtx.fillStyle=GESTURES[i].color;rCtx.globalAlpha=.75;rCtx.textAlign='center';rCtx.textBaseline='middle';
+    rCtx.fillText(GESTURES[i].id.slice(0,4).toUpperCase(),cx+Math.cos(a)*(R+10),cy+Math.sin(a)*(R+10));rCtx.globalAlpha=1}
+  rCtx.beginPath();for(let i=0;i<=n;i++){const g=GESTURES[i%n];const v=sc[g.id]||0;const a=(Math.PI*2*(i%n))/n-Math.PI/2;
+    const x=cx+Math.cos(a)*R*v,y=cy+Math.sin(a)*R*v;i===0?rCtx.moveTo(x,y):rCtx.lineTo(x,y)}
+  rCtx.fillStyle='rgba(16,185,129,.1)';rCtx.fill();rCtx.strokeStyle='rgba(16,185,129,.5)';rCtx.lineWidth=1.5;rCtx.stroke();
+  for(let i=0;i<n;i++){const g=GESTURES[i];const v=sc[g.id]||0;const a=(Math.PI*2*i)/n-Math.PI/2;
+    rCtx.beginPath();rCtx.arc(cx+Math.cos(a)*R*v,cy+Math.sin(a)*R*v,2.5,0,Math.PI*2);rCtx.fillStyle=g.color;rCtx.globalAlpha=v>.2?.85:.3;rCtx.fill();rCtx.globalAlpha=1}
+}
+
+// ═══════════════════════════════════════════════════════
+//  DRAWING: TIMELINE
+// ═══════════════════════════════════════════════════════
+
+function drawTimeline(){
+  const c=tlCanvas,dpr=devicePixelRatio||1,rect=c.parentElement.getBoundingClientRect();
+  c.width=rect.width*dpr;c.height=rect.height*dpr;tlCtx.scale(dpr,dpr);
+  const w=rect.width,h=rect.height;tlCtx.clearRect(0,0,w,h);if(tl.d.length<2)return;
+  const now=performance.now(),start=now-5000;
+  for(let gi=GESTURES.length-1;gi>=0;gi--){const g=GESTURES[gi];tlCtx.beginPath();let first=true;
+    for(const pt of tl.d){const x=((pt.t-start)/5000)*w,y=h-(pt.scores[g.id]||0)*(h-8)-2;first?(tlCtx.moveTo(x,y),first=false):tlCtx.lineTo(x,y)}
+    tlCtx.strokeStyle=g.color;tlCtx.globalAlpha=.6;tlCtx.lineWidth=1.5;tlCtx.stroke();tlCtx.globalAlpha=1}
+}
+
+// ═══════════════════════════════════════════════════════
+//  UI UPDATES
+// ═══════════════════════════════════════════════════════
+
+function updateBars(sc){
+  for(const g of GESTURES){const e=gEls[g.id];const v=sc[g.id]||0;e.fill.style.width=`${(v*100).toFixed(0)}%`;e.score.textContent=v.toFixed(2)}
+  const d=dominant(sc);if(d.score>.3){detLabel.textContent=d.gesture.name;detLabel.style.color=d.gesture.color}
+  else{detLabel.textContent='—';detLabel.style.color='rgba(255,255,255,.4)'}
+}
+
+function updateLat(){const c=lat.current;if(!c)return;
+  elLatT.innerHTML=`${c.total.toFixed(1)}<span class="lat-unit">ms</span>`;
+  elLatA.innerHTML=`${lat.avg.toFixed(1)}<span class="lat-unit">ms</span>`;
+  elLatP.innerHTML=`${c.processing.toFixed(1)}<span class="lat-unit">ms</span>`}
+
+function updateIxPanel(){
+  if(!IX_MODES.includes(mode))return;
+  let badge='',badgeColor='',stats='';
+
+  if(mode==='pinchSlide'){
+    const dir=pzoom.dir;
+    badge=dir==='in'?'Sliding In':dir==='out'?'Sliding Out':'Held';
+    badgeColor=dir==='in'?'var(--amber)':dir==='out'?'var(--blue)':'var(--tdd)';
+    const bg=dir==='in'?'rgba(245,158,11,.15)':dir==='out'?'rgba(59,130,246,.15)':'rgba(255,255,255,.05)';
+    ixBadge.style.color=badgeColor;ixBadge.style.background=bg;ixBadge.textContent=badge;
+    stats=`<div><div class="ix-stat-label">Value</div><div class="ix-stat-val" style="color:var(--amber)">${(pzoom.value*100).toFixed(0)}%</div></div>
+      <div><div class="ix-stat-label">Velocity</div><div class="ix-stat-val" style="color:var(--amber)">${(Math.abs(pzoom.vel)*1000).toFixed(0)}</div></div>
+      <div><div class="ix-stat-label">Pinch</div><div class="ix-stat-val" style="color:var(--amber)">${pzoom.pinchGap.toFixed(3)}</div></div>`;
+  } else if(mode==='palmZoom'){
+    const dir=palmz.dir;
+    badge=dir==='in'?'Closing':dir==='out'?'Opening':'Idle';
+    badgeColor=dir==='in'?'var(--emerald)':dir==='out'?'var(--blue)':'var(--tdd)';
+    const bg=dir==='in'?'rgba(16,185,129,.15)':dir==='out'?'rgba(59,130,246,.15)':'rgba(255,255,255,.05)';
+    ixBadge.style.color=badgeColor;ixBadge.style.background=bg;ixBadge.textContent=badge;
+    stats=`<div><div class="ix-stat-label">Scale</div><div class="ix-stat-val" style="color:var(--emerald)">${palmz.smooth.toFixed(2)}×</div></div>
+      <div><div class="ix-stat-label">Openness</div><div class="ix-stat-val" style="color:var(--emerald)">${palmz.openness.toFixed(2)}</div></div>
+      <div><div class="ix-stat-label">—</div><div class="ix-stat-val" style="color:var(--tdd)">—</div></div>`;
+  } else if(mode==='cursor'){
+    const conf=cursor.pointConf;
+    badge=conf>.5?'Tracking':conf>.2?'Weak':'Lost';
+    const col=conf>.5?'var(--blue)':conf>.2?'var(--amber)':'var(--red)';
+    const bg=conf>.5?'rgba(59,130,246,.15)':conf>.2?'rgba(245,158,11,.15)':'rgba(239,68,68,.15)';
+    ixBadge.style.color=col;ixBadge.style.background=bg;ixBadge.textContent=badge;
+    stats=`<div><div class="ix-stat-label">X</div><div class="ix-stat-val" style="color:var(--blue)">${cursor.sx.toFixed(2)}</div></div>
+      <div><div class="ix-stat-label">Y</div><div class="ix-stat-val" style="color:var(--blue)">${cursor.sy.toFixed(2)}</div></div>
+      <div><div class="ix-stat-label">Gain</div><div class="ix-stat-val" style="color:var(--blue)">${cursor.gain.toFixed(1)}×</div></div>`;
+  } else if(mode==='rotate'){
+    const v=Math.abs(rot.vel);
+    badge=v>1?'Rotating':'Held';
+    ixBadge.style.color='var(--purple)';ixBadge.style.background='rgba(139,92,246,.15)';ixBadge.textContent=badge;
+    stats=`<div><div class="ix-stat-label">Angle</div><div class="ix-stat-val" style="color:var(--purple)">${rot.smoothAngle.toFixed(1)}°</div></div>
+      <div><div class="ix-stat-label">Velocity</div><div class="ix-stat-val" style="color:var(--purple)">${rot.vel.toFixed(1)}</div></div>
+      <div><div class="ix-stat-label">Raw</div><div class="ix-stat-val" style="color:var(--purple)">${rot.angle.toFixed(1)}°</div></div>`;
+  } else if(mode==='tilt'){
+    const ang=tilt.smooth;
+    badge=Math.abs(ang)<5?'Neutral':ang>0?'Forward':'Backward';
+    ixBadge.style.color='var(--cyan)';ixBadge.style.background='rgba(6,182,212,.15)';ixBadge.textContent=badge;
+    stats=`<div><div class="ix-stat-label">Pitch</div><div class="ix-stat-val" style="color:var(--cyan)">${tilt.smooth.toFixed(1)}°</div></div>
+      <div><div class="ix-stat-label">Velocity</div><div class="ix-stat-val" style="color:var(--cyan)">${tilt.vel.toFixed(1)}</div></div>
+      <div><div class="ix-stat-label">Raw</div><div class="ix-stat-val" style="color:var(--cyan)">${tilt.delta.toFixed(1)}°</div></div>`;
+  }
+  ixStats.innerHTML=stats;
+}
+
+function updateTest(sc){
+  if(mode==='guided'&&guided.state!=='idle'){
+    const r=guided.update(sc);if(!r)return;
+    if(r.type==='prompt'){tPrompt.classList.add('visible');tpG.textContent=r.gesture.name;tpG.style.color=r.gesture.color;
+      tpS.textContent='Get ready…';tpC.textContent=r.countdown;tpP.style.width='0%';tStatus.textContent=`${guided.gi+1}/${GESTURES.length}`}
+    else if(r.type==='recording'){tPrompt.classList.add('visible');tpG.textContent=r.gesture.name;tpG.style.color=r.gesture.color;
+      tpS.textContent='Hold this gesture';tpC.textContent='';tpP.style.width=`${(r.progress*100).toFixed(0)}%`;
+      tFill.style.width=`${(((r.gi+r.progress)/r.total)*100).toFixed(0)}%`}
+    else if(r.type==='done'){tPrompt.classList.remove('visible');tBar.classList.remove('active');
+      tBtn.style.display='block';tBtn.textContent='Run Again';tStatus.textContent='Complete — matrix updated';renderMatrix(r.matrix)}
+  }
+  if(mode==='transition'&&trans.state!=='idle'){
+    const r=trans.update(sc);if(!r)return;
+    if(r.type==='waitStart'){tPrompt.classList.add('visible');tpG.textContent=r.gesture.name;tpG.style.color=r.gesture.color;
+      tpS.textContent='Hold to begin';tpC.textContent='';tpP.style.width='0%'}
+    else if(r.type==='waitEnd'){tPrompt.classList.add('visible');tpG.textContent=r.gesture.name;tpG.style.color=r.gesture.color;
+      tpS.textContent='Switch now';tpC.textContent='';tStatus.textContent=`Waiting… ${(r.elapsed/1000).toFixed(1)}s`}
+    else if(r.type==='done'){tPrompt.classList.remove('visible');tBar.classList.remove('active');
+      tBtn.style.display='block';tBtn.textContent='Run Again';
+      const x=r.result;let msg=`${x.from.name} → ${x.to.name}: ${x.ms}ms (${x.frames}f)`;
+      if(x.peak.gesture)msg+=` · interference: ${x.peak.gesture.name} ${x.peak.score.toFixed(2)}`;tStatus.textContent=msg}
+    else if(r.type==='timeout'){tPrompt.classList.remove('visible');tBar.classList.remove('active');
+      tBtn.style.display='block';tStatus.textContent='Timeout — not detected in 10s'}
+  }
+}
+
+function renderMatrix(mx){
+  matP.style.display='none';matC.style.display='block';
+  const sh=GESTURES.map(g=>g.id.slice(0,4).toUpperCase());
+  let h='<tr><th></th>'+GESTURES.map((g,j)=>`<th style="color:${g.color}">${sh[j]}</th>`).join('')+'</tr>';
+  for(let i=0;i<GESTURES.length;i++){const g=GESTURES[i];h+=`<tr><td style="color:${g.color}">${sh[i]}</td>`;
+    for(let j=0;j<GESTURES.length;j++){const v=mx[g.id][GESTURES[j].id];const diag=i===j;
+      const bg=diag?`rgba(16,185,129,${(v*.45).toFixed(2)})`:v>.12?`rgba(239,68,68,${(Math.min(v,.8)*.5).toFixed(2)})`:'transparent';
+      const fg=(diag||v>.12)?'#f4f2ec':'rgba(244,242,236,.25)';h+=`<td style="background:${bg};color:${fg}">${v.toFixed(2)}</td>`}h+='</tr>'}
+  matT.innerHTML=h;
+}
+
+// ═══════════════════════════════════════════════════════
+//  MAIN LOOP
+// ═══════════════════════════════════════════════════════
+
+let handLandmarker=null,lastVT=-1;
+
+function detect(){
+  if(video.currentTime===lastVT){requestAnimationFrame(detect);return}
+  lastVT=video.currentTime;
+  const t0=performance.now();
+  const res=handLandmarker.detectForVideo(video,performance.now());
+  const t1=performance.now();
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+
+  if(res.landmarks&&res.landmarks.length>0){
+    noHand.classList.remove('visible');
+    const lm=res.landmarks[0];
+    scores=classifyGestures(lm);
+    drawHand(lm,scores);
+    for(let h=1;h<res.landmarks.length;h++)drawHand(res.landmarks[h],classifyGestures(res.landmarks[h]));
+    drawRadar(scores);tl.push(scores);updateBars(scores);updateTest(scores);
+
+    // Interaction modes
+    if(mode==='pinchSlide'){pzoom.update(lm);drawIxOverlay(lm);updateIxPanel()}
+    else if(mode==='palmZoom'){palmz.update(lm);drawIxOverlay(lm);updateIxPanel()}
+    else if(mode==='cursor'){cursor.update(lm,scores);drawIxOverlay(lm);updateIxPanel()}
+    else if(mode==='rotate'){if(rot.refAngle===null)rot.calibrate(lm);rot.update(lm);drawIxOverlay(lm);updateIxPanel()}
+    else if(mode==='tilt'){tilt.update(lm);drawIxOverlay(lm);updateIxPanel()}
+    else{ixCtx.clearRect(0,0,ixCanvas.width,ixCanvas.height)}
+  } else {
+    noHand.classList.add('visible');detLabel.textContent='—';detLabel.style.color='rgba(255,255,255,.4)';
+    drawRadar({});ixCtx.clearRect(0,0,ixCanvas.width,ixCanvas.height);
+    pzoom.reset();cursor.reset();rot.reset();tilt.reset();
+  }
+
+  const t2=performance.now();
+  lat.record(t1-t0,t2-t1);updateLat();drawTimeline();
+  fc++;const now=performance.now();if(now-lastFps>=1000){fps=fc;fc=0;lastFps=now;fpsBadge.textContent=`${fps} FPS`}
+  requestAnimationFrame(detect);
+}
+
+// ═══════════════════════════════════════════════════════
+//  INIT
+// ═══════════════════════════════════════════════════════
+
+async function init(){
+  try{
+    loadTxt.textContent='Loading MediaPipe vision WASM…';
+    const vision=await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/wasm");
+    loadTxt.textContent='Loading hand landmarker model…';
+    handLandmarker=await HandLandmarker.createFromOptions(vision,{
+      baseOptions:{modelAssetPath:"https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",delegate:"GPU"},
+      runningMode:"VIDEO",numHands:2});
+    loadTxt.textContent='Starting camera…';
+    const stream=await navigator.mediaDevices.getUserMedia({video:{width:{ideal:1280},height:{ideal:720},facingMode:'user'}});
+    video.srcObject=stream;await video.play();
+    canvas.width=video.videoWidth;canvas.height=video.videoHeight;
+    sizeIxCanvas();
+    loadEl.classList.add('hidden');
+    requestAnimationFrame(detect);
+  }catch(err){console.error(err);
+    if(err.name==='NotAllowedError'||err.name==='PermissionDeniedError')loadTxt.textContent='Camera access denied. Allow permissions and reload.';
+    else if(err.name==='NotFoundError')loadTxt.textContent='No camera found. Connect a webcam and reload.';
+    else if(!navigator.mediaDevices?.getUserMedia)loadTxt.textContent='Camera API unavailable. Open via localhost or HTTPS.';
+    else loadTxt.textContent=`Error: ${err.message}`}
+}
+init();
+</script>
+</body>
+</html>

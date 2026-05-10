@@ -1,0 +1,757 @@
+<!--
+  Rubato Probabilities Studio — Katarina Blind
+  =============================================
+  Visualizes how image metrics (brightness, contrast, saturation spread, warmth)
+  map to generative performance probabilities in the skylinesound pipeline (M13).
+
+  FORMULAS (M13 mapping):
+    skip     = 0.015 + (1 − brightness) × 0.025 + contrast × 0.02   [1.5% – 6%]
+    harmony  = 0.04  + contrast × 0.07 + brightness × 0.02           [4% – 13%]
+    echo     = 0.03  + contrast × 0.05                                [3% – 8%]
+    ornament = 0.02  + saturationSpread × 0.08 + brightness × 0.02   [2% – 12%]
+
+  INPUTS     Adjust sliders manually, drop an image, or click a test preset.
+  OUTPUT     4 live probability bars + 16-note simulation grid.
+
+  RUN        python3 -m http.server 8000   (from experiments/data-mapping/)
+             then visit http://localhost:8000/rubato-probs/
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Rubato Studio · Katarina Blind</title>
+<link rel="stylesheet" href="../shared/tokens.css">
+<style>
+  body { height: 100vh; overflow: hidden; display: flex;
+    gap: var(--gutter); padding: var(--pad-y) var(--pad-x); }
+
+  /* ── Main column (light) ──────────────────────────── */
+  .col-main { flex: 1; display: flex; flex-direction: column;
+    gap: var(--gutter); min-width: 0; }
+
+  .header { flex: 0 0 auto; display: flex; align-items: baseline;
+    justify-content: space-between; padding: 0 4px; }
+  .h-title { font-size: var(--fs-heading); font-weight: var(--fw-semibold);
+    color: var(--text-inverse-subtle); letter-spacing: -0.01em; }
+  .h-byline { font-size: var(--fs-nano); color: var(--text-inverse-subtle);
+    font-weight: var(--fw-regular); letter-spacing: 0.06em;
+    text-transform: uppercase; opacity: 0.6; }
+
+  .main-panel { flex: 1 1 0; min-height: 0; position: relative;
+    background: var(--surface-muted); border-radius: var(--radius);
+    border: 1px solid var(--border); box-shadow: var(--shadow);
+    overflow: hidden; display: flex; flex-direction: column; }
+
+  /* ── Controls area ────────────────────────────────── */
+  .controls { flex: 1 1 0; min-height: 0; display: flex;
+    gap: 0; overflow: hidden; }
+
+  .sliders-col { flex: 0 0 60%; padding: 22px 24px 16px 24px;
+    display: flex; flex-direction: column; justify-content: center;
+    border-right: 1px solid var(--border); }
+
+  .sliders-heading { font-size: var(--fs-nano); font-weight: var(--fw-semibold);
+    letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--text-subtle); margin-bottom: 18px; }
+
+  .slider-row { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+  .slider-row:last-child { margin-bottom: 0; }
+  .slider-label { width: 120px; flex-shrink: 0; font-size: var(--fs-small);
+    color: var(--text); font-weight: var(--fw-medium); }
+  .slider-label.unused { color: var(--text-subtle); }
+  .slider-unused-tag { font-size: var(--fs-nano); font-weight: var(--fw-regular);
+    color: var(--text-subtle); margin-left: 4px; letter-spacing: 0.04em; }
+  .slider-row input[type=range] { flex: 1; accent-color: var(--accent);
+    height: 4px; cursor: pointer; }
+  .slider-row input[type=range]:disabled { opacity: 0.35; cursor: default; }
+  .slider-val { width: 36px; text-align: right; font-variant-numeric: tabular-nums;
+    font-size: var(--fs-small); color: var(--text-muted); font-weight: var(--fw-medium); }
+
+  /* ── Probability bars col ─────────────────────────── */
+  .probs-col { flex: 0 0 40%; padding: 22px 24px 16px 24px;
+    display: flex; flex-direction: column; justify-content: center; }
+
+  .probs-heading { font-size: var(--fs-nano); font-weight: var(--fw-semibold);
+    letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--text-subtle); margin-bottom: 18px; }
+
+  .prob-row { margin-bottom: 14px; }
+  .prob-row:last-child { margin-bottom: 0; }
+  .prob-row-head { display: flex; align-items: baseline; justify-content: space-between;
+    margin-bottom: 5px; }
+  .prob-name { font-size: var(--fs-small); font-weight: var(--fw-semibold);
+    color: var(--text); letter-spacing: -0.01em; }
+  .prob-pct { font-size: var(--fs-small); font-weight: var(--fw-semibold);
+    font-variant-numeric: tabular-nums; color: var(--accent); }
+  .prob-bar-track { height: 8px; background: rgba(0,0,0,0.06);
+    border-radius: 4px; overflow: hidden; }
+  .prob-bar-fill { height: 100%; background: var(--accent); border-radius: 4px;
+    transition: width 0.15s; }
+
+  /* ── Simulation panel ─────────────────────────────── */
+  .sim-panel { flex: 0 0 auto; padding: 14px 24px 18px 24px;
+    border-top: 1px solid var(--border); }
+
+  .sim-head { display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 10px; }
+  .sim-label { font-size: var(--fs-nano); font-weight: var(--fw-semibold);
+    letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-subtle); }
+  .reroll-btn { padding: 4px 12px; border-radius: var(--radius-pill);
+    background: transparent; color: var(--text-muted);
+    border: 1px solid rgba(0,0,0,0.10);
+    font-family: var(--font); font-size: var(--fs-nano);
+    font-weight: var(--fw-semibold); letter-spacing: 0.06em; text-transform: uppercase;
+    cursor: pointer; transition: all var(--dur-fast) var(--ease); }
+  .reroll-btn:hover { background: rgba(0,0,0,0.04); border-color: rgba(0,0,0,0.16); }
+
+  .note-grid { display: flex; gap: 4px; flex-wrap: wrap; }
+  .note-slot { width: 32px; height: 40px; border-radius: 4px;
+    background: var(--surface); border: 1px solid var(--border);
+    position: relative; display: flex; align-items: center; justify-content: center;
+    font-size: var(--fs-nano); font-weight: var(--fw-semibold);
+    color: var(--text-subtle); transition: background var(--dur-fast) var(--ease); }
+
+  /* Slot states */
+  .note-slot.state-normal { background: var(--surface); }
+  .note-slot.state-skip { background: rgba(0,0,0,0.03); color: rgba(0,0,0,0.18); }
+  .note-slot.state-skip .slot-inner { opacity: 0.35; }
+
+  /* Harmony indicator: green dot above */
+  .harmony-dot { position: absolute; top: 5px; left: 50%; transform: translateX(-50%);
+    width: 5px; height: 5px; border-radius: 50%; background: var(--accent);
+    display: none; }
+  .note-slot.has-harmony .harmony-dot { display: block; }
+
+  /* Echo indicator: faded small "x2" label */
+  .echo-tag { position: absolute; bottom: 4px; right: 4px;
+    font-size: 7px; font-weight: var(--fw-bold); color: var(--blue);
+    opacity: 0; letter-spacing: -0.02em; }
+  .note-slot.has-echo .echo-tag { opacity: 0.7; }
+
+  /* Ornament indicator: small dot before (top-left) */
+  .ornament-dot { position: absolute; top: 5px; left: 4px;
+    width: 3px; height: 3px; border-radius: 50%; background: var(--purple);
+    display: none; }
+  .note-slot.has-ornament .ornament-dot { display: block; }
+
+  /* ── Sidebar (dark) ───────────────────────────────── */
+  .sidebar { width: 340px; min-width: 340px; display: flex;
+    flex-direction: column; gap: var(--gutter); }
+  .sb-card { background: var(--surface-dark); border-radius: var(--radius);
+    border: 1px solid var(--border-dark); box-shadow: var(--shadow);
+    padding: 18px 20px; color: var(--text-inverse); }
+  .sb-card.scrollable { flex: 1 1 0; min-height: 0; overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255,255,255,0.08) transparent; }
+  .sb-card.scrollable::-webkit-scrollbar { width: 3px; }
+  .sb-card.scrollable::-webkit-scrollbar-track { background: transparent; }
+  .sb-card.scrollable::-webkit-scrollbar-thumb {
+    background: rgba(255,255,255,0.08); border-radius: 2px; }
+
+  .sb-label { font-size: var(--fs-nano); font-weight: var(--fw-semibold);
+    letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--text-inverse-subtle); margin-bottom: 12px; }
+  .sb-label:not(:first-child) { margin-top: 22px; }
+
+  /* ── Drop zone ─────────────────────────────────────── */
+  .drop-zone { border: 1px dashed rgba(255,255,255,0.12);
+    border-radius: var(--radius-inner); padding: 14px;
+    text-align: center; cursor: pointer; transition: all var(--dur-fast) var(--ease);
+    margin-bottom: 10px; }
+  .drop-zone:hover, .drop-zone.drag { border-color: var(--accent);
+    background: var(--accent-bg); }
+  .drop-zone-text { font-size: var(--fs-small); color: var(--text-inverse-muted); }
+  .drop-zone-sub { font-size: var(--fs-nano); color: var(--text-inverse-subtle);
+    margin-top: 3px; }
+
+  .img-preview { width: 100%; height: 80px; object-fit: cover;
+    border-radius: var(--radius-inner); display: none; margin-bottom: 10px;
+    border: 1px solid rgba(255,255,255,0.08); }
+  .img-preview.visible { display: block; }
+
+  /* ── Test cases ────────────────────────────────────── */
+  .case { border-bottom: 1px solid rgba(255,255,255,0.05);
+    padding: 10px 0; cursor: pointer; transition: opacity var(--dur-fast); }
+  .case:first-child { padding-top: 0; }
+  .case:last-child { border-bottom: none; padding-bottom: 0; }
+  .case:hover { opacity: 0.85; }
+  .case.active .case-name { color: var(--accent); }
+  .case-inner { display: flex; gap: 10px; align-items: center; }
+  .case-thumb { width: 60px; height: 44px; object-fit: cover;
+    border-radius: 5px; flex-shrink: 0; display: block;
+    opacity: 0.8; transition: opacity var(--dur-fast) var(--ease); }
+  .case:hover .case-thumb { opacity: 1; }
+  .case.active .case-thumb { opacity: 1;
+    outline: 2px solid var(--accent); outline-offset: 1px; }
+  .case-info { flex: 1; min-width: 0; }
+  .case-name { font-size: var(--fs-small); font-weight: var(--fw-semibold);
+    color: var(--text-inverse); letter-spacing: -0.01em; margin-bottom: 3px; }
+  .case-metrics { font-size: var(--fs-nano); color: var(--text-inverse-subtle);
+    font-variant-numeric: tabular-nums; line-height: 1.5; }
+
+  /* ── Formula card ──────────────────────────────────── */
+  .formula-block { margin-bottom: 8px; }
+  .formula-name { font-size: var(--fs-nano); font-weight: var(--fw-semibold);
+    letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--text-inverse-subtle); margin-bottom: 3px; }
+  .formula-eq { font-size: var(--fs-micro); color: var(--text-inverse-muted);
+    font-variant-numeric: tabular-nums; line-height: 1.6; }
+  .formula-eq code { background: rgba(255,255,255,0.07); padding: 1px 5px;
+    border-radius: 3px; font-size: 10px; letter-spacing: -0.02em; }
+  .formula-range { font-size: var(--fs-nano); color: var(--text-inverse-subtle);
+    margin-top: 1px; }
+
+  /* ── How this works ────────────────────────────────── */
+  .how-item { margin-bottom: 8px; }
+  .how-item:last-child { margin-bottom: 0; }
+  .how-name { font-size: var(--fs-nano); font-weight: var(--fw-semibold);
+    letter-spacing: 0.06em; text-transform: uppercase; color: var(--accent);
+    margin-bottom: 2px; }
+  .how-desc { font-size: var(--fs-nano); color: var(--text-inverse-subtle);
+    line-height: 1.55; }
+
+  /* ── Legend ─────────────────────────────────────────── */
+  .legend { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
+  .legend-item { display: flex; align-items: center; gap: 4px;
+    font-size: var(--fs-nano); color: var(--text-subtle); }
+  .legend-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+</style>
+</head>
+<body>
+
+<div class="col-main">
+  <div class="header">
+    <div class="h-title">Rubato Studio</div>
+    <div class="h-byline">Katarina Blind · Seattle</div>
+  </div>
+
+  <div class="main-panel">
+    <div class="controls">
+
+      <!-- Left: Sliders -->
+      <div class="sliders-col">
+        <div class="sliders-heading">Image Metrics</div>
+
+        <div class="slider-row">
+          <div class="slider-label">Brightness b</div>
+          <input type="range" id="sl-brightness" min="0" max="1" step="0.01" value="0.5"
+            oninput="onSlider()">
+          <div class="slider-val" id="val-brightness">0.50</div>
+        </div>
+
+        <div class="slider-row">
+          <div class="slider-label">Contrast c</div>
+          <input type="range" id="sl-contrast" min="0" max="1" step="0.01" value="0.4"
+            oninput="onSlider()">
+          <div class="slider-val" id="val-contrast">0.40</div>
+        </div>
+
+        <div class="slider-row">
+          <div class="slider-label unused">Warmth w
+            <span class="slider-unused-tag">unused</span>
+          </div>
+          <input type="range" id="sl-warmth" min="-1" max="1" step="0.01" value="0"
+            disabled>
+          <div class="slider-val" id="val-warmth" style="color:var(--text-subtle)">0.00</div>
+        </div>
+
+        <div class="slider-row">
+          <div class="slider-label">Sat. Spread s</div>
+          <input type="range" id="sl-satspread" min="0" max="1" step="0.01" value="0.3"
+            oninput="onSlider()">
+          <div class="slider-val" id="val-satspread">0.30</div>
+        </div>
+      </div>
+
+      <!-- Right: Probability bars -->
+      <div class="probs-col">
+        <div class="probs-heading">M13 Probabilities</div>
+
+        <div class="prob-row" id="prob-skip">
+          <div class="prob-row-head">
+            <div class="prob-name">Skip</div>
+            <div class="prob-pct" id="pct-skip">—</div>
+          </div>
+          <div class="prob-bar-track">
+            <div class="prob-bar-fill" id="bar-skip" style="width:0%"></div>
+          </div>
+        </div>
+
+        <div class="prob-row" id="prob-harmony">
+          <div class="prob-row-head">
+            <div class="prob-name">Harmony</div>
+            <div class="prob-pct" id="pct-harmony">—</div>
+          </div>
+          <div class="prob-bar-track">
+            <div class="prob-bar-fill" id="bar-harmony" style="width:0%"></div>
+          </div>
+        </div>
+
+        <div class="prob-row" id="prob-echo">
+          <div class="prob-row-head">
+            <div class="prob-name">Echo</div>
+            <div class="prob-pct" id="pct-echo">—</div>
+          </div>
+          <div class="prob-bar-track">
+            <div class="prob-bar-fill" id="bar-echo" style="width:0%"></div>
+          </div>
+        </div>
+
+        <div class="prob-row" id="prob-ornament">
+          <div class="prob-row-head">
+            <div class="prob-name">Ornament</div>
+            <div class="prob-pct" id="pct-ornament">—</div>
+          </div>
+          <div class="prob-bar-track">
+            <div class="prob-bar-fill" id="bar-ornament" style="width:0%"></div>
+          </div>
+        </div>
+
+        <div class="legend">
+          <div class="legend-item">
+            <div class="legend-dot" style="background:var(--accent)"></div>skip / harmony
+          </div>
+          <div class="legend-item">
+            <div class="legend-dot" style="background:var(--blue)"></div>echo
+          </div>
+          <div class="legend-item">
+            <div class="legend-dot" style="background:var(--purple)"></div>ornament
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Simulation panel -->
+    <div class="sim-panel">
+      <div class="sim-head">
+        <div class="sim-label">16-Note Simulation</div>
+        <button class="reroll-btn" onclick="reroll()">Re-roll</button>
+      </div>
+      <div class="note-grid" id="noteGrid"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Sidebar -->
+<div class="sidebar">
+  <div class="sb-card scrollable">
+
+    <!-- Image drop -->
+    <div class="sb-label">Image Input</div>
+    <img class="img-preview" id="imgPreview" alt="dropped image">
+    <div class="drop-zone" id="dropZone">
+      <div class="drop-zone-text">Drop an image</div>
+      <div class="drop-zone-sub">auto-seeds sliders from metrics</div>
+    </div>
+
+    <!-- Test presets -->
+    <div class="sb-label">Test Images</div>
+    <div id="caseList"></div>
+
+    <!-- Formula reference -->
+    <div class="sb-label">Formula Reference — M13</div>
+
+    <div class="formula-block">
+      <div class="formula-name">Skip</div>
+      <div class="formula-eq">
+        <code>0.015 + (1−b)×0.025 + c×0.02</code>
+      </div>
+      <div class="formula-range">range 1.5% – 6%</div>
+    </div>
+
+    <div class="formula-block">
+      <div class="formula-name">Harmony</div>
+      <div class="formula-eq">
+        <code>0.04 + c×0.07 + b×0.02</code>
+      </div>
+      <div class="formula-range">range 4% – 13%</div>
+    </div>
+
+    <div class="formula-block">
+      <div class="formula-name">Echo</div>
+      <div class="formula-eq">
+        <code>0.03 + c×0.05</code>
+      </div>
+      <div class="formula-range">range 3% – 8%</div>
+    </div>
+
+    <div class="formula-block">
+      <div class="formula-name">Ornament</div>
+      <div class="formula-eq">
+        <code>0.02 + s×0.08 + b×0.02</code>
+      </div>
+      <div class="formula-range">range 2% – 12%</div>
+    </div>
+
+    <!-- How this works -->
+    <div class="sb-label">How This Works</div>
+
+    <div class="how-item">
+      <div class="how-name">Skip</div>
+      <div class="how-desc">Dark, high-contrast images raise the chance a note is silenced — tension through absence.</div>
+    </div>
+    <div class="how-item">
+      <div class="how-name">Harmony</div>
+      <div class="how-desc">Contrasty or bright scenes invite harmonic ornamentation — a 3rd voiced above the melody note.</div>
+    </div>
+    <div class="how-item">
+      <div class="how-name">Echo</div>
+      <div class="how-desc">High contrast drives echo probability — sharp edges in the image translate to rhythmic repetition.</div>
+    </div>
+    <div class="how-item">
+      <div class="how-name">Ornament</div>
+      <div class="how-desc">Wide saturation spread and brightness lift ornament probability — colorful images produce more grace notes.</div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+// ── Formulas ──────────────────────────────────────────────────────────────────
+function computeProbs(b, c, w, s) {
+  const skip     = 0.015 + (1 - b) * 0.025 + c * 0.02;
+  const harmony  = 0.04  + c * 0.07 + b * 0.02;
+  const echo     = 0.03  + c * 0.05;
+  const ornament = 0.02  + s * 0.08 + b * 0.02;
+  return { skip, harmony, echo, ornament };
+}
+
+// ── Max values for bar scaling (derived from formula ranges) ──────────────────
+const BAR_MAX = { skip: 0.06, harmony: 0.13, echo: 0.08, ornament: 0.12 };
+
+// ── State ─────────────────────────────────────────────────────────────────────
+const state = {
+  b: 0.5, c: 0.4, w: 0.0, s: 0.3,
+  activeCase: null,
+};
+
+const $ = id => document.getElementById(id);
+
+// ── Slider sync ───────────────────────────────────────────────────────────────
+function readSliders() {
+  state.b = parseFloat($('sl-brightness').value);
+  state.c = parseFloat($('sl-contrast').value);
+  state.w = parseFloat($('sl-warmth').value);
+  state.s = parseFloat($('sl-satspread').value);
+}
+
+function writeSliderDisplays() {
+  $('val-brightness').textContent = state.b.toFixed(2);
+  $('val-contrast').textContent   = state.c.toFixed(2);
+  $('val-warmth').textContent     = state.w.toFixed(2);
+  $('val-satspread').textContent  = state.s.toFixed(2);
+}
+
+function pushSlidersFromState() {
+  $('sl-brightness').value = state.b;
+  $('sl-contrast').value   = state.c;
+  $('sl-warmth').value     = state.w;
+  $('sl-satspread').value  = state.s;
+  writeSliderDisplays();
+}
+
+// ── Probability display ───────────────────────────────────────────────────────
+function updateBars(probs) {
+  for (const key of ['skip', 'harmony', 'echo', 'ornament']) {
+    const pct = probs[key] * 100;
+    const fillPct = (probs[key] / BAR_MAX[key]) * 100;
+    $('pct-' + key).textContent  = pct.toFixed(1) + '%';
+    $('bar-' + key).style.width  = Math.min(fillPct, 100) + '%';
+  }
+}
+
+// ── Simulation ────────────────────────────────────────────────────────────────
+function reroll() {
+  const probs = computeProbs(state.b, state.c, state.w, state.s);
+  const grid  = $('noteGrid');
+  grid.innerHTML = '';
+
+  for (let i = 0; i < 16; i++) {
+    const slot = document.createElement('div');
+    slot.className = 'note-slot';
+
+    const harmonyDot  = document.createElement('div');
+    harmonyDot.className = 'harmony-dot';
+
+    const echoTag     = document.createElement('div');
+    echoTag.className = 'echo-tag';
+    echoTag.textContent = 'x2';
+
+    const ornamentDot = document.createElement('div');
+    ornamentDot.className = 'ornament-dot';
+
+    const inner = document.createElement('div');
+    inner.className = 'slot-inner';
+
+    // Roll each probability independently
+    const skipped  = Math.random() < probs.skip;
+    const harmonyOn = Math.random() < probs.harmony;
+    const echoOn    = Math.random() < probs.echo;
+    const ornamentOn = Math.random() < probs.ornament;
+
+    if (skipped) {
+      slot.classList.add('state-skip');
+      inner.textContent = '—';
+    } else {
+      slot.classList.add('state-normal');
+      inner.textContent = '♩';
+    }
+
+    if (harmonyOn && !skipped) slot.classList.add('has-harmony');
+    if (echoOn    && !skipped) slot.classList.add('has-echo');
+    if (ornamentOn && !skipped) slot.classList.add('has-ornament');
+
+    slot.appendChild(harmonyDot);
+    slot.appendChild(ornamentDot);
+    slot.appendChild(inner);
+    slot.appendChild(echoTag);
+
+    grid.appendChild(slot);
+  }
+}
+
+// ── Main update ───────────────────────────────────────────────────────────────
+function updateDisplay() {
+  writeSliderDisplays();
+  const probs = computeProbs(state.b, state.c, state.w, state.s);
+  updateBars(probs);
+  reroll();
+}
+
+function onSlider() {
+  readSliders();
+  updateDisplay();
+  state.activeCase = null;
+  renderCaseList();
+}
+
+// ── Image metric extraction (inlined from colorAnalysis logic) ────────────────
+function extractDominants(imageData, n) {
+  const { data, width, height } = imageData;
+  const pixels = [];
+  const step = Math.max(1, Math.floor(width * height / 2000));
+  for (let i = 0; i < width * height; i += step) {
+    const off = i * 4;
+    pixels.push({ r: data[off], g: data[off+1], b: data[off+2] });
+  }
+  // k-means with k=n, 8 iterations
+  let centroids = [];
+  for (let k = 0; k < n; k++) {
+    centroids.push(pixels[Math.floor((k / n) * pixels.length)]);
+  }
+  for (let iter = 0; iter < 8; iter++) {
+    const buckets = Array.from({length: n}, () => ({ r:0, g:0, b:0, cnt:0 }));
+    for (const p of pixels) {
+      let best = 0, bestDist = Infinity;
+      for (let k = 0; k < n; k++) {
+        const c = centroids[k];
+        const d = (p.r-c.r)**2 + (p.g-c.g)**2 + (p.b-c.b)**2;
+        if (d < bestDist) { bestDist = d; best = k; }
+      }
+      buckets[best].r   += p.r;
+      buckets[best].g   += p.g;
+      buckets[best].b   += p.b;
+      buckets[best].cnt += 1;
+    }
+    for (let k = 0; k < n; k++) {
+      const bk = buckets[k];
+      if (bk.cnt > 0) {
+        centroids[k] = { r: bk.r/bk.cnt, g: bk.g/bk.cnt, b: bk.b/bk.cnt };
+      }
+    }
+  }
+  return centroids;
+}
+
+function _extractImageMetrics(canvas) {
+  const ctx = canvas.getContext('2d');
+  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const { data, width, height } = imageData;
+  const total = width * height;
+
+  let sumR = 0, sumG = 0, sumB = 0;
+  let minLum = 1, maxLum = 0;
+  const sats = [];
+
+  const step = Math.max(1, Math.floor(total / 4000));
+  let sampleCount = 0;
+
+  for (let i = 0; i < total; i += step) {
+    const off = i * 4;
+    const r = data[off] / 255;
+    const g = data[off+1] / 255;
+    const b = data[off+2] / 255;
+
+    sumR += r; sumG += g; sumB += b;
+
+    // Luminance (perceptual)
+    const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    if (lum < minLum) minLum = lum;
+    if (lum > maxLum) maxLum = lum;
+
+    // Saturation (HSL-style)
+    const cmax = Math.max(r, g, b);
+    const cmin = Math.min(r, g, b);
+    const delta = cmax - cmin;
+    const l = (cmax + cmin) / 2;
+    const sat = delta === 0 ? 0 : delta / (1 - Math.abs(2*l - 1));
+    sats.push(sat);
+
+    sampleCount++;
+  }
+
+  const brightness = (sumR + sumG + sumB) / (3 * sampleCount);
+  const contrast   = Math.max(0, Math.min(1, maxLum - minLum));
+
+  // Saturation spread = stddev of sat values
+  const satMean = sats.reduce((a,x) => a+x, 0) / sats.length;
+  const satVar  = sats.reduce((a,x) => a + (x-satMean)**2, 0) / sats.length;
+  const saturationSpread = Math.min(1, Math.sqrt(satVar) * 3);
+
+  // Warmth from dominant color weighted average
+  const doms = extractDominants(imageData, 5);
+  const domAvgR = doms.reduce((a,c) => a+c.r, 0) / doms.length;
+  const domAvgB = doms.reduce((a,c) => a+c.b, 0) / doms.length;
+  const warmth = Math.max(-1, Math.min(1, (domAvgR - domAvgB) / 255));
+
+  return { brightness, contrast, saturationSpread, warmth };
+}
+
+// ── Image loading + metric seeding ────────────────────────────────────────────
+function loadImageToCanvas(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      const c = document.createElement('canvas');
+      // Downsample for speed: max 256px wide
+      const scale = Math.min(1, 256 / img.naturalWidth);
+      c.width  = Math.round(img.naturalWidth  * scale);
+      c.height = Math.round(img.naturalHeight * scale);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      resolve(c);
+    };
+    img.onerror = reject;
+    img.src = src;
+  });
+}
+
+function applyMetrics(metrics) {
+  state.b = Math.max(0, Math.min(1, +metrics.brightness.toFixed(2)));
+  state.c = Math.max(0, Math.min(1, +metrics.contrast.toFixed(2)));
+  state.w = Math.max(-1, Math.min(1, +metrics.warmth.toFixed(2)));
+  state.s = Math.max(0, Math.min(1, +metrics.saturationSpread.toFixed(2)));
+  pushSlidersFromState();
+  updateDisplay();
+}
+
+async function loadAndAnalyseImage(src, previewSrc) {
+  try {
+    const canvas  = await loadImageToCanvas(src);
+    const metrics = _extractImageMetrics(canvas);
+    applyMetrics(metrics);
+    // preview
+    const prev = $('imgPreview');
+    prev.src = previewSrc || src;
+    prev.classList.add('visible');
+  } catch (e) {
+    console.warn('Failed to analyse image:', src, e);
+  }
+}
+
+// ── Drag & drop on sidebar drop zone ─────────────────────────────────────────
+function wireDrop() {
+  const zone = $('dropZone');
+  zone.addEventListener('click', () => {
+    const inp = document.createElement('input');
+    inp.type = 'file'; inp.accept = 'image/*';
+    inp.onchange = async () => {
+      const file = inp.files[0];
+      if (!file) return;
+      state.activeCase = null;
+      renderCaseList();
+      const url = URL.createObjectURL(file);
+      await loadAndAnalyseImage(url, url);
+    };
+    inp.click();
+  });
+
+  ['dragenter', 'dragover'].forEach(ev =>
+    zone.addEventListener(ev, e => { e.preventDefault(); zone.classList.add('drag'); }));
+  ['dragleave', 'drop'].forEach(ev =>
+    zone.addEventListener(ev, e => { e.preventDefault(); zone.classList.remove('drag'); }));
+  zone.addEventListener('drop', async e => {
+    const file = [...e.dataTransfer.files].find(f => f.type.startsWith('image/'));
+    if (!file) return;
+    state.activeCase = null;
+    renderCaseList();
+    const url = URL.createObjectURL(file);
+    await loadAndAnalyseImage(url, url);
+  });
+}
+
+// ── Test cases ────────────────────────────────────────────────────────────────
+const TEST_IMAGES = ['forest.jpg', 'city.jpg', 'mountains.jpg'];
+const caseMetricsCache = {};
+
+async function activateCase(name) {
+  state.activeCase = name;
+  renderCaseList();
+
+  const src = `../shared/test-images/${name}`;
+  if (!caseMetricsCache[name]) {
+    try {
+      const canvas = await loadImageToCanvas(src);
+      caseMetricsCache[name] = _extractImageMetrics(canvas);
+    } catch (e) {
+      console.warn('Failed to load test image:', name, e);
+      return;
+    }
+  }
+
+  const prev = $('imgPreview');
+  prev.src = src;
+  prev.classList.add('visible');
+
+  applyMetrics(caseMetricsCache[name]);
+}
+
+function renderCaseList() {
+  const list = $('caseList');
+  list.innerHTML = '';
+  for (const name of TEST_IMAGES) {
+    const el = document.createElement('div');
+    el.className = 'case' + (state.activeCase === name ? ' active' : '');
+    el.onclick = () => activateCase(name);
+
+    const m = caseMetricsCache[name];
+    const metricsText = m
+      ? `b ${m.brightness.toFixed(2)} · c ${m.contrast.toFixed(2)} · s ${m.saturationSpread.toFixed(2)}`
+      : 'click to analyse';
+
+    el.innerHTML = `
+      <div class="case-inner">
+        <img class="case-thumb" src="../shared/test-images/${name}" alt="${name}" draggable="false">
+        <div class="case-info">
+          <div class="case-name">${name}</div>
+          <div class="case-metrics">${metricsText}</div>
+        </div>
+      </div>
+    `;
+    list.appendChild(el);
+  }
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+function boot() {
+  wireDrop();
+  renderCaseList();
+  updateDisplay();
+}
+
+boot();
+</script>
+</body>
+</html>

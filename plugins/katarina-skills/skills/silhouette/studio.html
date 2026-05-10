@@ -1,0 +1,1038 @@
+<!--
+  Silhouette Studio — Katarina Blind
+  ====================================
+  image → horizon profile extraction (primary) plus procedural generation
+  (secondary). The studio sits beside palette/ in the data-mapping pipeline:
+  palette/ extracts 5 swatches, silhouette/ extracts 1 horizon line.
+
+  EXTRACT mode (primary)
+    Drop an image on the stage OR click a test case. Three algorithms run
+    in parallel and overlay the image as colored stroke paths:
+      V1 amber   — sky region growing
+      V2 blue    — Sobel + continuity constraint
+      V3 emerald — DP seam carving (production)
+
+  GENERATE mode (secondary)
+    Procedural FBM-noise horizon scene with style presets, layered
+    parallax, sky/silhouette colors. Re-roll explores the seed space.
+
+  RUN  python3 -m http.server 8000   (from experiments/data-mapping/)
+       then visit http://localhost:8000/silhouette/
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Silhouette Studio · Katarina Blind</title>
+<link rel="stylesheet" href="../shared/tokens.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  body { height: 100vh; overflow: hidden; display: flex;
+    gap: var(--gutter); padding: var(--pad-y) var(--pad-x); }
+
+  /* ── Main column ──────────────────────────────────────── */
+  .col-main { flex: 1; display: flex; flex-direction: column;
+    gap: var(--gutter); min-width: 0; }
+  .header { flex: 0 0 auto; display: flex; align-items: baseline;
+    justify-content: space-between; padding: 0 4px; }
+  .h-title { font-size: var(--fs-heading); font-weight: var(--fw-semibold);
+    color: var(--text-inverse-subtle); letter-spacing: -0.01em; }
+  .h-byline { font-size: var(--fs-nano); color: var(--text-inverse-subtle);
+    font-weight: var(--fw-regular); letter-spacing: 0.06em;
+    text-transform: uppercase; opacity: 0.6; }
+
+  .main-panel { flex: 1 1 0; min-height: 0; position: relative;
+    background: var(--surface-muted); border-radius: var(--radius);
+    border: 1px solid var(--border); box-shadow: var(--shadow);
+    overflow: hidden; display: flex; flex-direction: column; }
+
+  /* ── Stage ────────────────────────────────────────────── */
+  .stage { flex: 1 1 0; min-height: 0; position: relative;
+    background: #e8eae6; display: flex; align-items: center;
+    justify-content: center; }
+  .stage canvas { max-width: 100%; max-height: 100%;
+    display: block; border-radius: var(--radius-inner); }
+  .stage.drag { background: var(--accent-bg); }
+
+  /* drop hint visible only in EXTRACT mode pre-image */
+  .drop-hint { position: absolute; inset: 0; display: flex;
+    flex-direction: column; align-items: center; justify-content: center;
+    gap: 6px; font-size: var(--fs-body); color: var(--text-subtle);
+    pointer-events: none; transition: opacity var(--dur-fast) var(--ease); }
+  .drop-hint .big { font-size: var(--fs-hero); font-weight: var(--fw-bold);
+    color: var(--text-muted); letter-spacing: -0.02em; }
+  .drop-hint.hidden { opacity: 0; }
+
+  /* extract-mode canvases stack: image below, overlay on top.
+     Both have pointer-events: none so drag/drop events fall through
+     to .stage where the listeners live. */
+  #imgCanvas, #overlayCanvas { display: block; max-width: 100%;
+    max-height: 100%; border-radius: var(--radius-inner);
+    pointer-events: none; }
+  #overlayCanvas { position: absolute; }
+
+  /* generate-mode canvas fills the stage */
+  #stageCanvas { display: none; width: 100%; height: 100%;
+    border-radius: 0; max-width: none; max-height: none; }
+  body.gen-mode #imgCanvas, body.gen-mode #overlayCanvas,
+  body.gen-mode #dropHint, body.gen-mode #imageLabel { display: none; }
+  body.gen-mode #stageCanvas { display: block; }
+  body.gen-mode .stage { background: #dde0db; align-items: stretch;
+    justify-content: stretch; }
+
+  .image-label { position: absolute; top: 14px; left: 14px; z-index: 2;
+    padding: 5px 13px; font-size: var(--fs-body); font-weight: var(--fw-semibold);
+    letter-spacing: -0.01em; color: var(--text);
+    background: rgba(255,255,255,0.85); backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px); border-radius: var(--radius-pill); }
+
+  .gen-mode-pill { position: absolute; top: 14px; left: 14px; z-index: 2;
+    padding: 5px 13px; font-size: var(--fs-body); font-weight: var(--fw-semibold);
+    letter-spacing: -0.01em; color: var(--text);
+    background: rgba(255,255,255,0.85); backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px); border-radius: var(--radius-pill);
+    display: none; }
+  body.gen-mode .gen-mode-pill { display: block; }
+
+  /* sub-mode toggle inside GENERATE: scene vs profile */
+  .gen-sub-toggle { position: absolute; top: 14px; right: 14px; z-index: 2;
+    display: none; gap: 0; padding: 3px; border-radius: var(--radius-pill);
+    background: rgba(255,255,255,0.85); backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px); }
+  body.gen-mode .gen-sub-toggle { display: flex; }
+  .gen-sub-toggle button { border: none; background: transparent;
+    padding: 4px 11px; font-family: var(--font); font-size: var(--fs-small);
+    font-weight: var(--fw-semibold); color: var(--text-muted);
+    border-radius: var(--radius-pill); cursor: pointer;
+    transition: all var(--dur-fast) var(--ease); letter-spacing: -0.01em; }
+  .gen-sub-toggle button.active { background: var(--text); color: var(--surface); }
+
+  /* ── Stat strip ───────────────────────────────────────── */
+  .stat-strip { flex: 0 0 auto; border-top: 1px solid var(--border);
+    background: var(--surface); padding: 10px 16px; display: flex;
+    align-items: center; gap: 16px; min-height: 38px; }
+  .stat-readout { font-family: 'DM Mono', ui-monospace, monospace;
+    font-size: var(--fs-small); color: var(--text-muted);
+    letter-spacing: 0.02em; font-variant-numeric: tabular-nums; }
+  .stat-readout .k { color: var(--text-subtle); }
+  .stat-readout .v { color: var(--text); font-weight: 500; }
+  .stat-sep { color: var(--text-subtle); margin: 0 8px; }
+  .stat-readout .swatch-dot { display: inline-block; width: 8px; height: 8px;
+    border-radius: 50%; vertical-align: middle; margin-right: 4px;
+    transform: translateY(-1px); }
+
+  body.ex-mode #genStats { display: none; }
+  body.gen-mode #extractStats { display: none; }
+
+  /* ── Sidebar ──────────────────────────────────────────── */
+  .sidebar { width: 340px; min-width: 340px; display: flex;
+    flex-direction: column; gap: var(--gutter); }
+  .sb-card { background: var(--surface-dark); border-radius: var(--radius);
+    border: 1px solid var(--border-dark); box-shadow: var(--shadow);
+    padding: 18px 20px; color: var(--text-inverse); }
+  .sb-card.scrollable { flex: 1 1 0; min-height: 0; overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255,255,255,0.08) transparent; }
+  .sb-card.scrollable::-webkit-scrollbar { width: 3px; }
+  .sb-card.scrollable::-webkit-scrollbar-track { background: transparent; }
+  .sb-card.scrollable::-webkit-scrollbar-thumb {
+    background: rgba(255,255,255,0.08); border-radius: 2px; }
+
+  .sb-label { font-size: var(--fs-nano); font-weight: var(--fw-semibold);
+    letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--text-inverse-subtle); margin-bottom: 12px; }
+  .sb-label:not(:first-child) { margin-top: 22px; }
+
+  /* ── Mode pill (EXTRACT · GENERATE) ───────────────────── */
+  .mode-pill-toggle { display: flex; gap: 0; padding: 3px;
+    border-radius: var(--radius-pill);
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.06); }
+  .mode-pill-toggle button { flex: 1; border: none; background: transparent;
+    padding: 7px 14px; font-family: var(--font); font-size: var(--fs-small);
+    font-weight: var(--fw-semibold); color: var(--text-inverse-muted);
+    border-radius: var(--radius-pill); cursor: pointer; letter-spacing: 0.04em;
+    transition: all var(--dur-fast) var(--ease); }
+  .mode-pill-toggle button.active { background: var(--accent-bg);
+    color: var(--accent); }
+
+  /* ── Algorithm toggles ────────────────────────────────── */
+  .algo-row { display: flex; align-items: center; gap: 10px;
+    padding: 8px 0; cursor: pointer;
+    border-bottom: 1px solid rgba(255,255,255,0.04); }
+  .algo-row:last-child { border-bottom: none; }
+  .algo-dot { width: 10px; height: 10px; border-radius: 50%;
+    flex-shrink: 0; box-shadow: 0 0 0 1px rgba(0,0,0,0.25) inset; }
+  .algo-name { flex: 1; font-size: var(--fs-small);
+    font-weight: var(--fw-semibold); color: var(--text-inverse);
+    letter-spacing: -0.01em; }
+  .algo-name .prod { font-size: var(--fs-nano);
+    color: var(--accent); font-weight: var(--fw-semibold);
+    letter-spacing: 0.06em; margin-left: 5px; }
+  .algo-row input[type=checkbox] { accent-color: var(--accent);
+    width: 14px; height: 14px; cursor: pointer; }
+  .algo-row.disabled .algo-name,
+  .algo-row.disabled .algo-dot { opacity: 0.4; }
+  .algo-meta { font-family: 'DM Mono', ui-monospace, monospace;
+    font-size: var(--fs-nano); color: var(--text-inverse-subtle);
+    font-variant-numeric: tabular-nums; }
+
+  /* ── Test case list ──────────────────────────────────── */
+  .case { border-bottom: 1px solid rgba(255,255,255,0.05);
+    padding: 12px 0; cursor: pointer; transition: opacity var(--dur-fast); }
+  .case:first-child { padding-top: 0; }
+  .case:last-child { border-bottom: none; padding-bottom: 0; }
+  .case:hover { opacity: 0.85; }
+  .case.active .case-name { color: var(--accent); }
+  .case-inner { display: flex; gap: 10px; align-items: center; }
+  .case-thumb { width: 72px; height: 52px; object-fit: cover;
+    border-radius: 5px; flex-shrink: 0; display: block;
+    background: rgba(255,255,255,0.04);
+    opacity: 0.85; transition: opacity var(--dur-fast) var(--ease); }
+  .case:hover .case-thumb { opacity: 1; }
+  .case.active .case-thumb { opacity: 1;
+    outline: 2px solid var(--accent); outline-offset: 1px; }
+  .case-info { flex: 1; min-width: 0; }
+  .case-name { font-size: var(--fs-small); font-weight: var(--fw-semibold);
+    color: var(--text-inverse); letter-spacing: -0.01em; }
+  .case-sub { font-size: var(--fs-nano); color: var(--text-inverse-subtle);
+    margin-top: 3px; font-family: 'DM Mono', ui-monospace, monospace;
+    font-variant-numeric: tabular-nums; letter-spacing: 0.02em; }
+
+  /* ── Re-roll button (GENERATE mode) ───────────────────── */
+  .reroll-btn { width: 100%; padding: 11px;
+    border-radius: var(--radius-pill);
+    background: var(--accent-bg); color: var(--accent);
+    border: 1px solid rgba(16,185,129,0.25);
+    font-family: var(--font); font-size: var(--fs-body);
+    font-weight: var(--fw-semibold); cursor: pointer;
+    letter-spacing: -0.01em;
+    transition: all var(--dur-fast) var(--ease); }
+  .reroll-btn:hover { background: rgba(16,185,129,0.18); }
+  .reroll-btn:active { transform: translateY(1px); }
+
+  .seed-row { display: flex; align-items: center; gap: 8px;
+    margin-top: 10px; padding: 8px 10px; border-radius: var(--radius-inner);
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.06); }
+  .seed-key { font-size: var(--fs-nano); font-weight: var(--fw-semibold);
+    letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--text-inverse-subtle); flex-shrink: 0; }
+  .seed-input { flex: 1; background: transparent; border: none; outline: none;
+    font-family: 'DM Mono', ui-monospace, monospace;
+    font-size: var(--fs-body); font-weight: 500;
+    color: var(--text-inverse); letter-spacing: 0.02em;
+    padding: 0; min-width: 0; }
+  .seed-input:focus { color: var(--accent); }
+
+  /* ── Select (preset) ──────────────────────────────────── */
+  .preset-select { width: 100%; padding: 9px 12px;
+    border-radius: var(--radius-inner);
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
+    color: var(--text-inverse);
+    font-family: var(--font); font-size: var(--fs-small);
+    font-weight: var(--fw-medium); cursor: pointer;
+    appearance: none; -webkit-appearance: none;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path fill='none' stroke='%23a8a59c' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round' d='M1 1l4 4 4-4'/></svg>");
+    background-repeat: no-repeat;
+    background-position: right 12px center;
+    padding-right: 30px; }
+  .preset-select:hover { border-color: rgba(255,255,255,0.14); }
+  .preset-select option { background: var(--surface-dark);
+    color: var(--text-inverse); }
+
+  /* ── Sliders ──────────────────────────────────────────── */
+  .slider-row { display: flex; align-items: center; gap: 10px;
+    margin-bottom: 10px; }
+  .slider-row:last-child { margin-bottom: 0; }
+  .s-label { font-size: var(--fs-small); font-weight: var(--fw-medium);
+    color: var(--text-inverse-muted); width: 96px; flex-shrink: 0;
+    letter-spacing: -0.01em; }
+  input[type=range] { flex: 1; accent-color: var(--accent);
+    height: 2px; cursor: pointer; }
+  .s-val { font-size: var(--fs-small); font-weight: var(--fw-semibold);
+    color: var(--text-inverse); min-width: 36px; text-align: right;
+    font-family: 'DM Mono', ui-monospace, monospace;
+    font-variant-numeric: tabular-nums; letter-spacing: 0; }
+
+  .color-row { display: flex; align-items: center; gap: 10px;
+    margin-bottom: 10px; }
+  .color-row:last-child { margin-bottom: 0; }
+  .color-label { flex: 1; font-size: var(--fs-small);
+    font-weight: var(--fw-medium); color: var(--text-inverse-muted);
+    letter-spacing: -0.01em; }
+  .color-swatch { width: 28px; height: 22px; border-radius: 5px;
+    border: 1px solid rgba(255,255,255,0.12); cursor: pointer;
+    overflow: hidden; padding: 0; }
+  .color-swatch input[type=color] { width: 200%; height: 200%;
+    margin: -25%; border: none; padding: 0; cursor: pointer; background: none; }
+  .color-hex { font-family: 'DM Mono', ui-monospace, monospace;
+    font-size: var(--fs-small); color: var(--text-inverse-muted);
+    min-width: 64px; text-align: right; }
+
+  .detail { font-size: var(--fs-micro); color: var(--text-inverse-muted);
+    line-height: 1.6; }
+  .detail code { background: rgba(255,255,255,0.06); padding: 1px 5px;
+    border-radius: 3px; font-size: 10px;
+    font-family: 'DM Mono', ui-monospace, monospace; }
+
+  /* ── Mode-scoped sidebar groups ───────────────────────── */
+  body.ex-mode .gen-only  { display: none; }
+  body.gen-mode .ex-only  { display: none; }
+</style>
+</head>
+<body class="ex-mode">
+
+<div class="col-main">
+  <div class="header">
+    <div class="h-title">Silhouette Studio</div>
+    <div class="h-byline">Katarina Blind · Seattle</div>
+  </div>
+
+  <div class="main-panel">
+    <div class="stage" id="stage">
+      <!-- EXTRACT mode -->
+      <canvas id="imgCanvas"></canvas>
+      <canvas id="overlayCanvas"></canvas>
+      <div class="image-label" id="imageLabel" style="display:none"></div>
+      <div class="drop-hint" id="dropHint">
+        <div class="big">Drop an image</div>
+        <div>or click a test case</div>
+      </div>
+
+      <!-- GENERATE mode -->
+      <canvas id="stageCanvas"></canvas>
+      <div class="gen-mode-pill" id="genModePill">Horizon scene</div>
+      <div class="gen-sub-toggle">
+        <button id="modeScene"   class="active">Scene</button>
+        <button id="modeProfile">Profile</button>
+      </div>
+    </div>
+
+    <div class="stat-strip">
+      <!-- EXTRACT stats -->
+      <div class="stat-readout" id="extractStats">
+        <span id="exReadout"><span class="k">Drop an image to run all algorithms.</span></span>
+      </div>
+      <!-- GENERATE stats -->
+      <div class="stat-readout" id="genStats">
+        <span class="k">SEED</span> <span class="v" id="rSeed">—</span>
+        <span class="stat-sep">·</span>
+        <span class="k">POINTS</span> <span class="v" id="rPoints">—</span>
+        <span class="stat-sep">·</span>
+        <span class="k">PEAK</span> <span class="v" id="rPeak">—</span>
+        <span class="stat-sep">·</span>
+        <span class="k">LAYERS</span> <span class="v" id="rLayers">—</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="sidebar">
+  <!-- Mode toggle: always visible -->
+  <div class="sb-card" style="padding: 6px;">
+    <div class="mode-pill-toggle">
+      <button id="modeExtract" class="active">EXTRACT</button>
+      <button id="modeGenerate">GENERATE</button>
+    </div>
+  </div>
+
+  <!-- Body: scrollable, contents swap by mode -->
+  <div class="sb-card scrollable">
+
+    <!-- ════════ EXTRACT-only ════════ -->
+    <div class="ex-only">
+      <div class="sb-label" style="margin-bottom:10px">Algorithms</div>
+      <label class="algo-row" data-id="v1">
+        <span class="algo-dot" style="background:#f59e0b"></span>
+        <span class="algo-name">V1 · Sky region growing</span>
+        <span class="algo-meta" id="metaV1">—</span>
+        <input type="checkbox" checked>
+      </label>
+      <label class="algo-row" data-id="v2">
+        <span class="algo-dot" style="background:#3b82f6"></span>
+        <span class="algo-name">V2 · Sobel + continuity</span>
+        <span class="algo-meta" id="metaV2">—</span>
+        <input type="checkbox" checked>
+      </label>
+      <label class="algo-row" data-id="v3">
+        <span class="algo-dot" style="background:#10b981"></span>
+        <span class="algo-name">V3 · DP seam carving<span class="prod">PROD</span></span>
+        <span class="algo-meta" id="metaV3">—</span>
+        <input type="checkbox" checked>
+      </label>
+
+      <div class="sb-label">Test cases</div>
+      <div id="caseList"></div>
+
+      <div class="sb-label">About</div>
+      <div class="detail">
+        Three horizon-extraction algorithms run on the same <code>ImageData</code>
+        and overlay as colored 1D paths. <code>V3</code> (emerald) is the
+        production algorithm; <code>V1</code>/<code>V2</code> are kept as
+        comparison baselines. Each output is a <code>Float32Array</code> of
+        length <code>image.width</code>, values in <code>[0,1]</code>
+        where <code>1</code> = top of frame.
+      </div>
+    </div>
+
+    <!-- ════════ GENERATE-only ════════ -->
+    <div class="gen-only">
+      <button class="reroll-btn" id="rerollBtn">Re-roll</button>
+      <div class="seed-row">
+        <div class="seed-key">Seed</div>
+        <input class="seed-input" id="seedInput" type="text" spellcheck="false"
+               autocomplete="off" value="0x00000000">
+      </div>
+
+      <div class="sb-label">Style preset</div>
+      <select class="preset-select" id="presetSel">
+        <option value="hills">Rolling hills</option>
+        <option value="mountain" selected>Mountain ridge</option>
+        <option value="urban">Urban skyline</option>
+        <option value="coast">Coastline</option>
+        <option value="forest">Forest canopy</option>
+      </select>
+
+      <div class="sb-label">Noise</div>
+      <div class="slider-row">
+        <div class="s-label">Scale</div>
+        <input type="range" id="slScale" min="0.5" max="8" step="0.1" value="2.2">
+        <div class="s-val" id="vScale">2.2</div>
+      </div>
+      <div class="slider-row">
+        <div class="s-label">Octaves</div>
+        <input type="range" id="slOct" min="1" max="6" step="1" value="5">
+        <div class="s-val" id="vOct">5</div>
+      </div>
+      <div class="slider-row">
+        <div class="s-label">Roughness</div>
+        <input type="range" id="slRough" min="0" max="1" step="0.01" value="0.62">
+        <div class="s-val" id="vRough">0.62</div>
+      </div>
+
+      <div class="sb-label">Shape</div>
+      <div class="slider-row">
+        <div class="s-label">Peak height</div>
+        <input type="range" id="slPeak" min="0" max="1" step="0.01" value="0.82">
+        <div class="s-val" id="vPeak">0.82</div>
+      </div>
+      <div class="slider-row">
+        <div class="s-label">Baseline</div>
+        <input type="range" id="slBase" min="0" max="1" step="0.01" value="0.12">
+        <div class="s-val" id="vBase">0.12</div>
+      </div>
+      <div class="slider-row">
+        <div class="s-label">Sharpness</div>
+        <input type="range" id="slSharp" min="0" max="1" step="0.01" value="0.55">
+        <div class="s-val" id="vSharp">0.55</div>
+      </div>
+
+      <div class="sb-label">Composition</div>
+      <div class="slider-row">
+        <div class="s-label">Layers</div>
+        <input type="range" id="slLayers" min="1" max="4" step="1" value="3">
+        <div class="s-val" id="vLayers">3</div>
+      </div>
+
+      <div class="sb-label">Colors</div>
+      <div class="color-row">
+        <div class="color-label">Sky</div>
+        <span class="color-hex" id="hexSky">#cfd9d4</span>
+        <label class="color-swatch" style="background:#cfd9d4">
+          <input type="color" id="colSky" value="#cfd9d4">
+        </label>
+      </div>
+      <div class="color-row">
+        <div class="color-label">Silhouette</div>
+        <span class="color-hex" id="hexFill">#0e1210</span>
+        <label class="color-swatch" style="background:#0e1210">
+          <input type="color" id="colFill" value="#0e1210">
+        </label>
+      </div>
+
+      <div class="sb-label">About</div>
+      <div class="detail">
+        Layered FBM noise on a deterministic <code>seed</code>. Presets configure
+        the noise field; tune any knob to deviate. Toggle <code>Profile</code>
+        to see just the horizon curve as a stroked path.
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script type="module">
+import {
+  EXTRACTORS, extractV1, extractV2, extractV3,
+  generateProfile, PRESETS, randomSeed, formatSeed, parseSeed,
+} from './silhouette.js';
+
+const $ = id => document.getElementById(id);
+
+/* ════════════════════════════════════════════════════════════════════════
+ * SHARED STATE
+ * ══════════════════════════════════════════════════════════════════════ */
+const state = {
+  mode: 'extract',                 // 'extract' | 'generate'
+
+  // EXTRACT mode
+  algoOn:      { v1: true, v2: true, v3: true },
+  activeImage: null,               // filename or 'dropped'
+  canvases:    {},                 // cached canvases for test images
+  profiles:    null,               // { v1, v2, v3 } per active image
+  imgRendered: { w: 0, h: 0 },     // rendered draw size on imgCanvas
+
+  // GENERATE mode (preserved from previous procedural-only version)
+  seed:       randomSeed(),
+  presetKey:  'mountain',
+  scale:      2.2,
+  octaves:    5,
+  roughness:  0.62,
+  peak:       0.82,
+  baseline:   0.12,
+  sharpness:  0.55,
+  layers:     3,
+  skyColor:   '#cfd9d4',
+  fillColor:  '#0e1210',
+  genMode:    'scene',             // 'scene' | 'profile' (within GENERATE)
+};
+
+const TEST_IMAGES = [
+  { file: 'mountains.jpg', label: 'Mountains' },
+  { file: 'forest.jpg',    label: 'Forest'    },
+  { file: 'city.jpg',      label: 'Skyline'   },
+];
+
+/* ════════════════════════════════════════════════════════════════════════
+ * EXTRACT MODE
+ * ══════════════════════════════════════════════════════════════════════ */
+
+function loadImageToCanvas(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      const c = document.createElement('canvas');
+      c.width = img.naturalWidth;
+      c.height = img.naturalHeight;
+      c.getContext('2d').drawImage(img, 0, 0);
+      resolve({ canvas: c, img });
+    };
+    img.onerror = reject;
+    img.src = src;
+  });
+}
+
+async function cacheTestImages() {
+  for (const t of TEST_IMAGES) {
+    try {
+      const { canvas } = await loadImageToCanvas(`../shared/test-images/${t.file}`);
+      state.canvases[t.file] = canvas;
+    } catch (e) {
+      // Skip gracefully — case will simply not be clickable
+      console.warn(`Test image not found: ${t.file}`);
+    }
+  }
+}
+
+function runExtraction(canvas) {
+  // Downsample for speed: cap longest side at 480px before getImageData.
+  // Profile is then upsampled to display width. Halves DP runtime on big jpgs.
+  const MAX = 480;
+  const s = Math.min(1, MAX / Math.max(canvas.width, canvas.height));
+  const w = Math.max(1, Math.round(canvas.width * s));
+  const h = Math.max(1, Math.round(canvas.height * s));
+  const tmp = document.createElement('canvas');
+  tmp.width = w; tmp.height = h;
+  tmp.getContext('2d').drawImage(canvas, 0, 0, w, h);
+  const data = tmp.getContext('2d').getImageData(0, 0, w, h);
+  return {
+    v1: extractV1(data),
+    v2: extractV2(data),
+    v3: extractV3(data),
+    sourceSize: { w, h },
+  };
+}
+
+function renderActiveImage(canvas, label) {
+  const target  = $('imgCanvas');
+  const overlay = $('overlayCanvas');
+  const stage   = $('stage');
+  const maxW = stage.clientWidth;
+  const maxH = stage.clientHeight;
+  const scale = Math.min(maxW / canvas.width, maxH / canvas.height, 1);
+  const dw = Math.round(canvas.width * scale);
+  const dh = Math.round(canvas.height * scale);
+  target.width = dw; target.height = dh;
+  target.getContext('2d').drawImage(canvas, 0, 0, dw, dh);
+  overlay.width = dw; overlay.height = dh;
+  state.imgRendered = { w: dw, h: dh };
+  $('dropHint').classList.add('hidden');
+  const lbl = $('imageLabel');
+  if (label) { lbl.textContent = label; lbl.style.display = ''; }
+  else       { lbl.style.display = 'none'; }
+}
+
+function drawOverlay() {
+  const overlay = $('overlayCanvas');
+  const ctx = overlay.getContext('2d');
+  const { w, h } = state.imgRendered;
+  ctx.clearRect(0, 0, w, h);
+  if (!state.profiles) return;
+
+  for (const ex of EXTRACTORS) {
+    if (!state.algoOn[ex.id]) continue;
+    const profile = state.profiles[ex.id];
+    if (!profile) continue;
+    drawProfileStroke(ctx, profile, w, h, ex.color);
+  }
+}
+
+function drawProfileStroke(ctx, profile, w, h, color) {
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineWidth   = 2;
+  ctx.lineJoin    = 'round';
+  ctx.lineCap     = 'round';
+  ctx.beginPath();
+  for (let x = 0; x < w; x++) {
+    const px = (x / Math.max(1, w - 1)) * (profile.length - 1);
+    const i0 = Math.floor(px);
+    const f  = px - i0;
+    const v0 = profile[i0];
+    const v1 = profile[Math.min(profile.length - 1, i0 + 1)];
+    const v  = v0 * (1 - f) + v1 * f;
+    const py = (1 - v) * h;
+    if (x === 0) ctx.moveTo(x, py);
+    else         ctx.lineTo(x, py);
+  }
+  ctx.stroke();
+  ctx.restore();
+}
+
+function updateExtractStats() {
+  const parts = [];
+  if (!state.profiles) {
+    $('exReadout').innerHTML = '<span class="k">Drop an image to run all algorithms.</span>';
+  } else {
+    for (const ex of EXTRACTORS) {
+      const p = state.profiles[ex.id];
+      const n = p ? p.length : 0;
+      // V3 is the auto-selector: append which sibling it picked plus
+      // the residual value (noise metric) so the threshold is tuneable.
+      const pickSuffix = ex.auto && p && p.picked
+        ? ` → ${p.picked.toUpperCase()} (${(p.residual ?? 0).toFixed(4)})` : '';
+      const valText = state.algoOn[ex.id]
+        ? `${n}pt${pickSuffix}` : 'off';
+      $('meta' + ex.id.toUpperCase()).textContent = valText;
+      const dot = `<span class="swatch-dot" style="background:${ex.color}"></span>`;
+      const cls = state.algoOn[ex.id] ? 'v' : 'k';
+      parts.push(`${dot}<span class="k">${ex.id.toUpperCase()}</span> <span class="${cls}">${valText}</span>`);
+    }
+    $('exReadout').innerHTML = parts.join('<span class="stat-sep">·</span>');
+  }
+}
+
+function renderCaseList() {
+  const list = $('caseList');
+  list.innerHTML = '';
+  for (const t of TEST_IMAGES) {
+    const isActive = state.activeImage === t.file;
+    const el = document.createElement('div');
+    el.className = 'case' + (isActive ? ' active' : '');
+    el.onclick = () => activateTestImage(t.file, t.label);
+    el.innerHTML = `
+      <div class="case-inner">
+        <img class="case-thumb" src="../shared/test-images/${t.file}"
+             alt="${t.label}" draggable="false"
+             onerror="this.style.visibility='hidden'">
+        <div class="case-info">
+          <div class="case-name">${t.label}</div>
+          <div class="case-sub">${t.file}</div>
+        </div>
+      </div>
+    `;
+    list.appendChild(el);
+  }
+}
+
+async function activateTestImage(file, label) {
+  // Prefer cached canvas (set by background prefetch); load on demand if
+  // the prefetch hasn't completed yet so a click is never a no-op.
+  let canvas = state.canvases[file];
+  if (!canvas) {
+    try {
+      const loaded = await loadImageToCanvas(`../shared/test-images/${file}`);
+      canvas = loaded.canvas;
+      state.canvases[file] = canvas;
+    } catch (e) {
+      console.warn(`Test image not found: ${file}`);
+      return;
+    }
+  }
+  state.activeImage = file;
+  renderActiveImage(canvas, label);
+  state.profiles = runExtraction(canvas);
+  drawOverlay();
+  updateExtractStats();
+  renderCaseList();
+}
+
+function wireDragDrop() {
+  const stage = $('stage');
+  ['dragenter', 'dragover'].forEach(ev =>
+    stage.addEventListener(ev, e => {
+      if (state.mode !== 'extract') return;
+      e.preventDefault(); stage.classList.add('drag');
+    }));
+  ['dragleave', 'drop'].forEach(ev =>
+    stage.addEventListener(ev, e => { e.preventDefault(); stage.classList.remove('drag'); }));
+  stage.addEventListener('drop', async e => {
+    if (state.mode !== 'extract') return;
+    const file = [...e.dataTransfer.files].find(f => f.type.startsWith('image/'));
+    if (!file) return;
+    const url = URL.createObjectURL(file);
+    try {
+      const { canvas } = await loadImageToCanvas(url);
+      URL.revokeObjectURL(url);
+      state.activeImage = 'dropped';
+      renderActiveImage(canvas, file.name);
+      state.profiles = runExtraction(canvas);
+      drawOverlay();
+      updateExtractStats();
+      renderCaseList();
+    } catch (err) {
+      URL.revokeObjectURL(url);
+      console.warn('Failed to load dropped image', err);
+    }
+  });
+}
+
+function wireAlgoToggles() {
+  document.querySelectorAll('.algo-row').forEach(row => {
+    const id  = row.dataset.id;
+    const cb  = row.querySelector('input[type=checkbox]');
+    cb.addEventListener('change', () => {
+      state.algoOn[id] = cb.checked;
+      row.classList.toggle('disabled', !cb.checked);
+      drawOverlay();
+      updateExtractStats();
+    });
+  });
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+ * GENERATE MODE (preserved from previous procedural-only version)
+ * ══════════════════════════════════════════════════════════════════════ */
+
+const PROFILE_POINTS = 1024;
+
+function layerParams(s) {
+  const n = s.layers, out = [];
+  for (let i = 0; i < n; i++) {
+    const t = n === 1 ? 1 : i / (n - 1);
+    out.push({
+      seed:      (s.seed + i * 0x9E3779B1) >>> 0,
+      scale:     s.scale * (0.7 + 0.6 * t),
+      octaves:   Math.max(1, s.octaves - (n - 1 - i)),
+      roughness: s.roughness,
+      peak:      s.peak * (0.45 + 0.55 * t),
+      baseline:  s.baseline * (0.4 + 0.6 * t),
+      sharpness: s.sharpness * (0.6 + 0.4 * t),
+      haze:      1 - t,
+    });
+  }
+  return out;
+}
+
+function fitGenCanvas() {
+  const c = $('stageCanvas');
+  const dpr = Math.max(1, window.devicePixelRatio || 1);
+  const r = c.parentElement.getBoundingClientRect();
+  const w = Math.max(1, Math.floor(r.width));
+  const h = Math.max(1, Math.floor(r.height));
+  c.width  = w * dpr;
+  c.height = h * dpr;
+  c.style.width  = w + 'px';
+  c.style.height = h + 'px';
+  const ctx = c.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { ctx, w, h };
+}
+
+function hexToRgb(hex) {
+  const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+  if (!m) return { r: 0, g: 0, b: 0 };
+  return { r: parseInt(m[1], 16), g: parseInt(m[2], 16), b: parseInt(m[3], 16) };
+}
+function mixColor(a, b, t) {
+  return {
+    r: Math.round(a.r + (b.r - a.r) * t),
+    g: Math.round(a.g + (b.g - a.g) * t),
+    b: Math.round(a.b + (b.b - a.b) * t),
+  };
+}
+function rgbStr(c) { return `rgb(${c.r},${c.g},${c.b})`; }
+
+let _lastFront = null;
+
+function renderGen() {
+  const { ctx, w, h } = fitGenCanvas();
+  const layers = layerParams(state);
+  const sky    = hexToRgb(state.skyColor);
+  const fill   = hexToRgb(state.fillColor);
+
+  const profiles = layers.map(l => generateProfile({
+    seed: l.seed, width: PROFILE_POINTS,
+    scale: l.scale, octaves: l.octaves, roughness: l.roughness,
+    peak: l.peak, baseline: l.baseline, sharpness: l.sharpness,
+  }));
+  _lastFront = profiles[profiles.length - 1];
+
+  if (state.genMode === 'profile') drawGenProfile(ctx, w, h, profiles);
+  else                              drawGenScene  (ctx, w, h, profiles, layers, sky, fill);
+
+  updateGenStats();
+}
+
+function drawGenScene(ctx, w, h, profiles, layers, sky, fill) {
+  const skyTop    = mixColor(sky, { r: 255, g: 255, b: 255 }, 0.18);
+  const skyBottom = sky;
+  const grad = ctx.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, rgbStr(skyTop));
+  grad.addColorStop(1, rgbStr(skyBottom));
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, w, h);
+  for (let i = 0; i < profiles.length; i++) {
+    const haze  = layers[i].haze;
+    const color = mixColor(fill, sky, haze * 0.7);
+    ctx.fillStyle = rgbStr(color);
+    fillProfilePath(ctx, profiles[i], w, h);
+  }
+}
+
+function drawGenProfile(ctx, w, h, profiles) {
+  ctx.fillStyle = '#f1f1ee';
+  ctx.fillRect(0, 0, w, h);
+  ctx.strokeStyle = 'rgba(0,0,0,0.06)'; ctx.lineWidth = 1;
+  [0.25, 0.5, 0.75].forEach(y => {
+    ctx.beginPath(); ctx.moveTo(0, y * h); ctx.lineTo(w, y * h); ctx.stroke();
+  });
+  for (let i = 0; i < profiles.length; i++) {
+    const isFront = i === profiles.length - 1;
+    ctx.strokeStyle = isFront ? '#10b981' : 'rgba(20,20,20,0.35)';
+    ctx.lineWidth   = isFront ? 1.6 : 1;
+    ctx.beginPath();
+    const profile = profiles[i];
+    for (let x = 0; x < w; x++) {
+      const px = (x / w) * profile.length;
+      const i0 = Math.floor(px); const f = px - i0;
+      const v0 = profile[Math.min(i0, profile.length - 1)];
+      const v1 = profile[Math.min(i0 + 1, profile.length - 1)];
+      const v  = v0 * (1 - f) + v1 * f;
+      const py = (1 - v) * h;
+      if (x === 0) ctx.moveTo(x, py); else ctx.lineTo(x, py);
+    }
+    ctx.stroke();
+  }
+}
+
+function fillProfilePath(ctx, profile, w, h) {
+  ctx.beginPath();
+  for (let x = 0; x <= w; x++) {
+    const px = (x / w) * profile.length;
+    const i0 = Math.floor(px); const f = px - i0;
+    const v0 = profile[Math.min(i0, profile.length - 1)];
+    const v1 = profile[Math.min(i0 + 1, profile.length - 1)];
+    const v  = v0 * (1 - f) + v1 * f;
+    const py = (1 - v) * h;
+    if (x === 0) ctx.moveTo(x, py); else ctx.lineTo(x, py);
+  }
+  ctx.lineTo(w, h); ctx.lineTo(0, h); ctx.closePath(); ctx.fill();
+}
+
+function updateGenStats() {
+  $('rSeed').textContent   = formatSeed(state.seed);
+  $('rPoints').textContent = String(PROFILE_POINTS);
+  let mx = 0;
+  if (_lastFront) for (let i = 0; i < _lastFront.length; i++)
+    if (_lastFront[i] > mx) mx = _lastFront[i];
+  $('rPeak').textContent   = mx.toFixed(2);
+  $('rLayers').textContent = String(state.layers);
+  $('seedInput').value     = formatSeed(state.seed);
+  $('genModePill').textContent =
+    state.genMode === 'profile' ? 'Profile curve' : 'Horizon scene';
+}
+
+function applyPreset(key) {
+  const p = PRESETS[key];
+  if (!p) return;
+  state.presetKey = key;
+  state.scale = p.scale; state.octaves = p.octaves; state.roughness = p.roughness;
+  state.peak  = p.peak;  state.baseline = p.baseline; state.sharpness = p.sharpness;
+  syncSlidersFromState();
+}
+
+function syncSlidersFromState() {
+  $('slScale').value  = state.scale;     $('vScale').textContent  = (+state.scale).toFixed(1);
+  $('slOct').value    = state.octaves;   $('vOct').textContent    = String(state.octaves);
+  $('slRough').value  = state.roughness; $('vRough').textContent  = (+state.roughness).toFixed(2);
+  $('slPeak').value   = state.peak;      $('vPeak').textContent   = (+state.peak).toFixed(2);
+  $('slBase').value   = state.baseline;  $('vBase').textContent   = (+state.baseline).toFixed(2);
+  $('slSharp').value  = state.sharpness; $('vSharp').textContent  = (+state.sharpness).toFixed(2);
+  $('slLayers').value = state.layers;    $('vLayers').textContent = String(state.layers);
+}
+
+function wireGenSliders() {
+  const map = [
+    ['slScale',  'vScale',  'scale',     v => +(+v).toFixed(1), v => (+v).toFixed(1)],
+    ['slOct',    'vOct',    'octaves',   v => parseInt(v, 10),  v => String(parseInt(v, 10))],
+    ['slRough',  'vRough',  'roughness', v => +(+v).toFixed(2), v => (+v).toFixed(2)],
+    ['slPeak',   'vPeak',   'peak',      v => +(+v).toFixed(2), v => (+v).toFixed(2)],
+    ['slBase',   'vBase',   'baseline',  v => +(+v).toFixed(2), v => (+v).toFixed(2)],
+    ['slSharp',  'vSharp',  'sharpness', v => +(+v).toFixed(2), v => (+v).toFixed(2)],
+    ['slLayers', 'vLayers', 'layers',    v => parseInt(v, 10),  v => String(parseInt(v, 10))],
+  ];
+  for (const [slId, valId, key, parse, fmt] of map) {
+    $(slId).addEventListener('input', e => {
+      state[key] = parse(e.target.value);
+      $(valId).textContent = fmt(e.target.value);
+      if (state.mode === 'generate') renderGen();
+    });
+  }
+}
+
+function wireGenColors() {
+  $('colSky').addEventListener('input', e => {
+    state.skyColor = e.target.value;
+    e.target.parentElement.style.background = e.target.value;
+    $('hexSky').textContent = e.target.value;
+    if (state.mode === 'generate') renderGen();
+  });
+  $('colFill').addEventListener('input', e => {
+    state.fillColor = e.target.value;
+    e.target.parentElement.style.background = e.target.value;
+    $('hexFill').textContent = e.target.value;
+    if (state.mode === 'generate') renderGen();
+  });
+}
+
+function wireGenSeed() {
+  const inp = $('seedInput');
+  inp.addEventListener('focus', () => inp.select());
+  inp.addEventListener('change', () => {
+    const parsed = parseSeed(inp.value);
+    if (parsed != null) { state.seed = parsed; if (state.mode === 'generate') renderGen(); }
+    else inp.value = formatSeed(state.seed);
+  });
+  inp.addEventListener('keydown', e => { if (e.key === 'Enter') inp.blur(); });
+}
+
+function wireGenReroll() {
+  $('rerollBtn').addEventListener('click', () => {
+    state.seed = randomSeed();
+    if (state.mode === 'generate') renderGen();
+  });
+}
+
+function wireGenPreset() {
+  $('presetSel').addEventListener('change', e => {
+    applyPreset(e.target.value);
+    if (state.mode === 'generate') renderGen();
+  });
+}
+
+function wireGenSubMode() {
+  $('modeScene').addEventListener('click', () => {
+    state.genMode = 'scene';
+    $('modeScene').classList.add('active');
+    $('modeProfile').classList.remove('active');
+    if (state.mode === 'generate') renderGen();
+  });
+  $('modeProfile').addEventListener('click', () => {
+    state.genMode = 'profile';
+    $('modeProfile').classList.add('active');
+    $('modeScene').classList.remove('active');
+    if (state.mode === 'generate') renderGen();
+  });
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+ * MODE SWITCH
+ * ══════════════════════════════════════════════════════════════════════ */
+
+function setMode(m) {
+  state.mode = m;
+  document.body.classList.toggle('ex-mode',  m === 'extract');
+  document.body.classList.toggle('gen-mode', m === 'generate');
+  $('modeExtract').classList.toggle('active',  m === 'extract');
+  $('modeGenerate').classList.toggle('active', m === 'generate');
+  if (m === 'extract') {
+    // Re-fit overlay if image already loaded (handles entering after gen mode)
+    if (state.activeImage) drawOverlay();
+  } else {
+    renderGen();
+  }
+}
+
+function wireModeToggle() {
+  $('modeExtract').addEventListener('click', () => setMode('extract'));
+  $('modeGenerate').addEventListener('click', () => setMode('generate'));
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+ * BOOT
+ * ══════════════════════════════════════════════════════════════════════ */
+
+async function boot() {
+  // GENERATE init: defaults + preset, but don't render yet (extract is default)
+  applyPreset('mountain');
+  $('presetSel').value = 'mountain';
+  state.layers = 3;
+  syncSlidersFromState();
+
+  // Wiring
+  wireModeToggle();
+  wireAlgoToggles();
+  wireDragDrop();
+  wireGenSliders();
+  wireGenColors();
+  wireGenSeed();
+  wireGenReroll();
+  wireGenPreset();
+  wireGenSubMode();
+
+  // Resize: rerender whichever mode is active
+  window.addEventListener('resize', () => {
+    if (state.mode === 'generate') {
+      renderGen();
+    } else if (state.activeImage) {
+      const canvas = state.activeImage === 'dropped'
+        ? null  // dropped images aren't cached for resize; skip refit
+        : state.canvases[state.activeImage];
+      if (canvas) {
+        renderActiveImage(canvas, $('imageLabel').textContent);
+        drawOverlay();
+      }
+    }
+  });
+
+  // Default mode: EXTRACT
+  setMode('extract');
+  updateExtractStats();
+  renderCaseList();
+
+  // Pre-load test images in background; refresh case list when each lands
+  await cacheTestImages();
+  renderCaseList();
+}
+
+boot();
+</script>
+</body>
+</html>

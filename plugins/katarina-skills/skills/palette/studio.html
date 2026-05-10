@@ -1,0 +1,486 @@
+<!--
+  Palette Studio — Katarina Blind
+  ================================
+  image → 5-swatch palette extraction for the skylinesound pipeline.
+  Isolated from audio, silhouette detection, and music generation so the
+  algorithm can be tuned against labeled cases independently.
+
+  ALGORITHM  mappingV3.js — multiplicative score (count × vivacity) +
+             hue-aware diversity gate. Captures dominant structure AND
+             vivid accents proportional to their visual presence.
+
+  INPUTS     Drop an image on the stage OR click a test case in the sidebar.
+  OUTPUT     5 RGB swatches sorted light → dark.
+
+  RUN        python3 -m http.server 8000   (from experiments/data-mapping/)
+             then visit http://localhost:8000/palette/
+
+  BASELINES  One baselines.json committed to git. "Download baselines"
+             regenerates it from current outputs. Drop the downloaded
+             file into this directory to update the source of truth.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Palette Studio · Katarina Blind</title>
+<link rel="stylesheet" href="../shared/tokens.css">
+<style>
+  body { height: 100vh; overflow: hidden; display: flex;
+    gap: var(--gutter); padding: var(--pad-y) var(--pad-x); }
+
+  /* ── Main column (light) ────────────────────────────── */
+  .col-main { flex: 1; display: flex; flex-direction: column;
+    gap: var(--gutter); min-width: 0; }
+  .header { flex: 0 0 auto; display: flex; align-items: baseline;
+    justify-content: space-between; padding: 0 4px; }
+  .h-title { font-size: var(--fs-heading); font-weight: var(--fw-semibold);
+    color: var(--text-inverse-subtle); letter-spacing: -0.01em; }
+  .h-byline { font-size: var(--fs-nano); color: var(--text-inverse-subtle);
+    font-weight: var(--fw-regular); letter-spacing: 0.06em;
+    text-transform: uppercase; opacity: 0.6; }
+
+  .main-panel { flex: 1 1 0; min-height: 0; position: relative;
+    background: var(--surface-muted); border-radius: var(--radius);
+    border: 1px solid var(--border); box-shadow: var(--shadow);
+    overflow: hidden; display: flex; flex-direction: column; }
+
+  .stage { flex: 1 1 0; min-height: 0; position: relative;
+    background: #e8eae6; display: flex; align-items: center;
+    justify-content: center; }
+  .stage canvas { max-width: 100%; max-height: 100%;
+    display: block; border-radius: var(--radius-inner); }
+
+  .drop-hint { position: absolute; inset: 0; display: flex;
+    flex-direction: column; align-items: center; justify-content: center;
+    gap: 6px; font-size: var(--fs-body); color: var(--text-subtle);
+    pointer-events: none; transition: opacity var(--dur-fast) var(--ease); }
+  .drop-hint .big { font-size: var(--fs-hero); font-weight: var(--fw-bold);
+    color: var(--text-muted); letter-spacing: -0.02em; }
+  .drop-hint.hidden { opacity: 0; }
+
+  .stage.drag { background: var(--accent-bg); }
+
+  .image-label { position: absolute; top: 14px; left: 14px; z-index: 2;
+    padding: 5px 13px; font-size: var(--fs-body); font-weight: var(--fw-semibold);
+    letter-spacing: -0.01em; color: var(--text);
+    background: rgba(255,255,255,0.85); backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px); border-radius: var(--radius-pill); }
+
+  /* ── Swatch rows (below the stage) ──────────────────── */
+  .rows { flex: 0 0 auto; padding: 16px 18px; display: flex;
+    flex-direction: column; gap: 14px;
+    border-top: 1px solid var(--border); }
+  .row { display: flex; align-items: center; gap: 14px; }
+  .row-head { width: 150px; flex-shrink: 0; }
+  .row-name { font-size: var(--fs-small); font-weight: var(--fw-semibold);
+    color: var(--text); letter-spacing: -0.01em; }
+  .row-desc { font-size: var(--fs-micro); color: var(--text-subtle);
+    font-weight: var(--fw-regular); margin-top: 2px; line-height: 1.4; }
+  .swatches { flex: 1; display: flex; gap: 6px; }
+  .sw { flex: 1; aspect-ratio: 3 / 1; border-radius: var(--radius-inner);
+    position: relative; overflow: hidden;
+    box-shadow: inset 0 0 0 1px rgba(0,0,0,0.08); cursor: default; }
+  .sw-meta { position: absolute; left: 0; right: 0; bottom: 0;
+    padding: 4px 8px; font-size: var(--fs-nano); font-weight: var(--fw-semibold);
+    font-variant-numeric: tabular-nums; letter-spacing: 0.02em;
+    color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,0.5);
+    background: linear-gradient(transparent, rgba(0,0,0,0.4)); }
+  .sw.empty { background: repeating-linear-gradient(45deg,
+    rgba(0,0,0,0.04), rgba(0,0,0,0.04) 6px,
+    rgba(0,0,0,0.08) 6px, rgba(0,0,0,0.08) 12px); box-shadow: none; }
+
+  /* ── Sidebar (dark) ──────────────────────────────────── */
+  .sidebar { width: 340px; min-width: 340px; display: flex;
+    flex-direction: column; gap: var(--gutter); }
+  .sb-card { background: var(--surface-dark); border-radius: var(--radius);
+    border: 1px solid var(--border-dark); box-shadow: var(--shadow);
+    padding: 18px 20px; color: var(--text-inverse); }
+  .sb-card.scrollable { flex: 1 1 0; min-height: 0; overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255,255,255,0.08) transparent; }
+  .sb-card.scrollable::-webkit-scrollbar { width: 3px; }
+  .sb-card.scrollable::-webkit-scrollbar-track { background: transparent; }
+  .sb-card.scrollable::-webkit-scrollbar-thumb {
+    background: rgba(255,255,255,0.08); border-radius: 2px; }
+
+  .sb-label { font-size: var(--fs-nano); font-weight: var(--fw-semibold);
+    letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--text-inverse-subtle); margin-bottom: 12px; }
+  .sb-label:not(:first-child) { margin-top: 22px; }
+
+  /* ── Test case list ──────────────────────────────────── */
+  .case { border-bottom: 1px solid rgba(255,255,255,0.05);
+    padding: 12px 0; cursor: pointer; transition: opacity var(--dur-fast); }
+  .case:first-child { padding-top: 0; }
+  .case:last-child { border-bottom: none; padding-bottom: 0; }
+  .case:hover { opacity: 0.85; }
+  .case.active .case-name { color: var(--accent); }
+
+  .case-head { display: flex; align-items: center;
+    justify-content: space-between; margin-bottom: 8px; }
+  .case-name { font-size: var(--fs-small); font-weight: var(--fw-semibold);
+    color: var(--text-inverse); letter-spacing: -0.01em; }
+  .case-badges { display: flex; gap: 4px; }
+  .badge { font-size: var(--fs-nano); font-weight: var(--fw-semibold);
+    padding: 2px 7px; border-radius: var(--radius-pill);
+    letter-spacing: 0.02em; font-variant-numeric: tabular-nums; }
+  .badge.pass { color: var(--accent); background: var(--accent-bg); }
+  .badge.fail { color: var(--red); background: rgba(239,68,68,0.12); }
+  .badge.new  { color: var(--amber); background: rgba(245,158,11,0.12); }
+
+  .case-row { display: flex; align-items: center; gap: 8px;
+    margin-bottom: 4px; }
+  .case-row:last-child { margin-bottom: 0; }
+  .case-tag { font-size: var(--fs-nano); font-weight: var(--fw-semibold);
+    color: var(--text-inverse-subtle); width: 20px; flex-shrink: 0;
+    letter-spacing: 0.04em; }
+  .case-sw { display: flex; gap: 2px; flex: 1; height: 16px;
+    border-radius: 3px; overflow: hidden; }
+  .case-sw .s { flex: 1; }
+
+  /* ── Sidebar thumbnail ───────────────────────────── */
+  .case-inner { display: flex; gap: 10px; align-items: flex-start; }
+  .case-thumb { width: 72px; height: 52px; object-fit: cover;
+    border-radius: 5px; flex-shrink: 0; display: block;
+    opacity: 0.85; transition: opacity var(--dur-fast) var(--ease); }
+  .case:hover .case-thumb { opacity: 1; }
+  .case.active .case-thumb { opacity: 1;
+    outline: 2px solid var(--accent); outline-offset: 1px; }
+  .case-info { flex: 1; min-width: 0; }
+
+  /* ── Actions ─────────────────────────────────────────── */
+  .actions { display: flex; flex-direction: column; gap: 6px; margin-top: 14px; }
+  .btn { width: 100%; padding: 9px; border-radius: var(--radius-pill);
+    background: transparent; color: var(--text-inverse);
+    border: 1px solid rgba(255,255,255,0.08);
+    font-family: var(--font); font-size: var(--fs-small);
+    font-weight: var(--fw-semibold); cursor: pointer;
+    transition: all var(--dur-fast) var(--ease); }
+  .btn:hover { background: rgba(255,255,255,0.05);
+    border-color: rgba(255,255,255,0.14); }
+  .btn.primary { background: var(--accent-bg);
+    border-color: rgba(16,185,129,0.25); color: var(--accent); }
+  .btn.primary:hover { background: rgba(16,185,129,0.18); }
+
+  .status { font-size: var(--fs-micro); color: var(--text-inverse-subtle);
+    margin-top: 8px; min-height: 14px; line-height: 1.5; }
+
+  /* ── Detail panel (below test list) ──────────────────── */
+  .detail { font-size: var(--fs-micro); color: var(--text-inverse-muted);
+    line-height: 1.6; font-variant-numeric: tabular-nums; }
+  .detail code { background: rgba(255,255,255,0.06); padding: 1px 5px;
+    border-radius: 3px; font-size: 10px; letter-spacing: -0.02em; }
+</style>
+</head>
+<body>
+
+<div class="col-main">
+  <div class="header">
+    <div class="h-title">Palette Studio</div>
+    <div class="h-byline">Katarina Blind · Seattle</div>
+  </div>
+
+  <div class="main-panel">
+    <div class="stage" id="stage">
+      <canvas id="imgCanvas"></canvas>
+      <div class="image-label" id="imageLabel" style="display:none"></div>
+      <div class="drop-hint" id="dropHint">
+        <div class="big">Drop an image</div>
+        <div>or click a test case</div>
+      </div>
+    </div>
+    <div class="rows">
+      <div class="row">
+        <div class="row-head">
+          <div class="row-name">Color Palette</div>
+          <div class="row-desc">5 perceptually distinct swatches, light → dark.</div>
+        </div>
+        <div class="swatches" id="rowV3"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="sidebar">
+  <div class="sb-card scrollable">
+    <div class="sb-label">Test cases</div>
+    <div id="caseList"></div>
+
+    <div class="sb-label">Baselines</div>
+    <div class="detail" id="baselineInfo">Loading…</div>
+    <div class="actions">
+      <button class="btn primary" id="runAllBtn">Run all tests</button>
+      <button class="btn" id="downloadBtn">Download baselines.json</button>
+    </div>
+    <div class="status" id="status"></div>
+
+    <div class="sb-label">How to update baselines</div>
+    <div class="detail">
+      1. Click <code>Run all tests</code> to see pass/fail against committed baselines.<br>
+      2. If current output is better, click <code>Download baselines.json</code>.<br>
+      3. Replace <code>palette/baselines.json</code> with the download.<br>
+      4. Commit. Future runs diff against the new baseline.
+    </div>
+  </div>
+</div>
+
+<script type="module">
+import { extractPalette, META } from './mappingV3.js';
+
+const TEST_IMAGES = ['forest.jpg', 'city.jpg', 'mountains.jpg'];
+const MAPPINGS = [
+  { id: META.id, fn: extractPalette, meta: META, rowEl: 'rowV3' },
+];
+
+// ── State ─────────────────────────────────────────────
+const state = {
+  baselines: null,            // parsed baselines.json or null
+  results:   {},              // { 'forest.jpg': { v1: [...], v2: [...] } }
+  activeImage: null,          // filename or 'dropped'
+  canvases:  {},              // cached canvases for test images
+};
+
+const $ = id => document.getElementById(id);
+
+// ── Image loading ─────────────────────────────────────
+function loadImageToCanvas(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      const c = document.createElement('canvas');
+      c.width = img.naturalWidth;
+      c.height = img.naturalHeight;
+      c.getContext('2d').drawImage(img, 0, 0);
+      resolve({ canvas: c, img });
+    };
+    img.onerror = reject;
+    img.src = src;
+  });
+}
+
+async function cacheTestImages() {
+  for (const name of TEST_IMAGES) {
+    try {
+      const { canvas } = await loadImageToCanvas(`../shared/test-images/${name}`);
+      state.canvases[name] = canvas;
+    } catch (e) {
+      console.warn(`Failed to load ${name}`, e);
+    }
+  }
+}
+
+// ── Mapping execution ─────────────────────────────────
+function runMappings(canvas) {
+  const out = {};
+  for (const m of MAPPINGS) {
+    out[m.id] = m.fn(canvas, 5);
+  }
+  return out;
+}
+
+// ── Rendering ─────────────────────────────────────────
+function renderSwatches(el, palette) {
+  el.innerHTML = '';
+  const slots = 5;
+  for (let i = 0; i < slots; i++) {
+    const s = palette[i];
+    const div = document.createElement('div');
+    div.className = 'sw' + (s ? '' : ' empty');
+    if (s) {
+      div.style.background = `rgb(${s.r}, ${s.g}, ${s.b})`;
+      const meta = document.createElement('div');
+      meta.className = 'sw-meta';
+      meta.textContent = toHex(s);
+      div.appendChild(meta);
+    }
+    el.appendChild(div);
+  }
+}
+
+function toHex({ r, g, b }) {
+  const h = n => n.toString(16).padStart(2, '0');
+  return `#${h(r)}${h(g)}${h(b)}`.toUpperCase();
+}
+
+function renderActiveImage(canvas, label) {
+  const target = $('imgCanvas');
+  const maxW = target.parentElement.clientWidth;
+  const maxH = target.parentElement.clientHeight;
+  const scale = Math.min(maxW / canvas.width, maxH / canvas.height, 1);
+  target.width = canvas.width * scale;
+  target.height = canvas.height * scale;
+  target.getContext('2d').drawImage(canvas, 0, 0, target.width, target.height);
+  $('dropHint').classList.add('hidden');
+  const lbl = $('imageLabel');
+  if (label) { lbl.textContent = label; lbl.style.display = ''; }
+  else       { lbl.style.display = 'none'; }
+}
+
+// ── Test case list ────────────────────────────────────
+function renderCaseList() {
+  const list = $('caseList');
+  list.innerHTML = '';
+  for (const name of TEST_IMAGES) {
+    const r = state.results[name];
+    const baseline = state.baselines?.images?.[name];
+    const isActive = state.activeImage === name;
+
+    const el = document.createElement('div');
+    el.className = 'case' + (isActive ? ' active' : '');
+    el.onclick = () => activateTestImage(name);
+
+    // Per-mapping status badges
+    const badges = MAPPINGS.map(m => {
+      if (!r) return `<span class="badge new">—</span>`;
+      if (!baseline || !baseline[m.id]) return `<span class="badge new">NEW</span>`;
+      const ok = paletteEqual(r[m.id], baseline[m.id]);
+      return `<span class="badge ${ok ? 'pass' : 'fail'}">${m.id.toUpperCase()} ${ok ? 'OK' : 'DIFF'}</span>`;
+    }).join('');
+
+    el.innerHTML = `
+      <div class="case-inner">
+        <img class="case-thumb" src="../shared/test-images/${name}" alt="${name}" draggable="false">
+        <div class="case-info">
+          <div class="case-head">
+            <div class="case-name">${name}</div>
+            <div class="case-badges">${badges}</div>
+          </div>
+          ${MAPPINGS.map(m => `
+            <div class="case-row">
+              <div class="case-tag">${m.id.toUpperCase()}</div>
+              <div class="case-sw">${swatchStripHTML(r?.[m.id])}</div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
+    list.appendChild(el);
+  }
+}
+
+function swatchStripHTML(palette) {
+  if (!palette) return '<div class="s" style="background:rgba(255,255,255,0.04)"></div>'.repeat(5);
+  return palette.map(s => `<div class="s" style="background:rgb(${s.r},${s.g},${s.b})"></div>`).join('');
+}
+
+function paletteEqual(a, b) {
+  if (!a || !b) return false;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].r !== b[i].r || a[i].g !== b[i].g || a[i].b !== b[i].b) return false;
+  }
+  return true;
+}
+
+// ── Actions ───────────────────────────────────────────
+function activateTestImage(name) {
+  const canvas = state.canvases[name];
+  if (!canvas) { setStatus(`Image not loaded: ${name}`); return; }
+  state.activeImage = name;
+  renderActiveImage(canvas, name);
+  const out = state.results[name] || runMappings(canvas);
+  state.results[name] = out;
+  for (const m of MAPPINGS) renderSwatches($(m.rowEl), out[m.id]);
+  renderCaseList();
+}
+
+async function runAll() {
+  setStatus('Running all mappings…');
+  for (const name of TEST_IMAGES) {
+    const canvas = state.canvases[name];
+    if (!canvas) continue;
+    state.results[name] = runMappings(canvas);
+  }
+  renderCaseList();
+  updateBaselineInfo();
+  setStatus(`Ran ${Object.keys(state.results).length} × ${MAPPINGS.length} mappings.`);
+}
+
+function downloadBaselines() {
+  const images = {};
+  for (const name of TEST_IMAGES) {
+    const r = state.results[name];
+    if (!r) continue;
+    images[name] = {};
+    for (const m of MAPPINGS) {
+      images[name][m.id] = r[m.id].map(({ r, g, b }) => ({ r, g, b }));
+    }
+  }
+  const out = {
+    generated: new Date().toISOString(),
+    mappings: MAPPINGS.map(m => ({ id: m.id, name: m.meta.name })),
+    images,
+  };
+  const blob = new Blob([JSON.stringify(out, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'baselines.json';
+  a.click();
+  URL.revokeObjectURL(url);
+  setStatus('Downloaded baselines.json. Replace palette/baselines.json and commit.');
+}
+
+async function loadBaselines() {
+  try {
+    const r = await fetch('./baselines.json', { cache: 'no-store' });
+    if (!r.ok) throw new Error('not found');
+    state.baselines = await r.json();
+  } catch (e) {
+    state.baselines = null;
+  }
+  updateBaselineInfo();
+}
+
+function updateBaselineInfo() {
+  const el = $('baselineInfo');
+  if (!state.baselines) {
+    el.innerHTML = `<code>baselines.json</code> not found. Run tests and download to seed.`;
+    return;
+  }
+  const n = Object.keys(state.baselines.images || {}).length;
+  const when = new Date(state.baselines.generated).toLocaleString();
+  el.innerHTML = `Loaded <code>${n}</code> images · ${when}`;
+}
+
+function setStatus(msg) { $('status').textContent = msg; }
+
+// ── Drag & drop ───────────────────────────────────────
+function wireDragDrop() {
+  const stage = $('stage');
+  ['dragenter', 'dragover'].forEach(ev =>
+    stage.addEventListener(ev, e => { e.preventDefault(); stage.classList.add('drag'); }));
+  ['dragleave', 'drop'].forEach(ev =>
+    stage.addEventListener(ev, e => { e.preventDefault(); stage.classList.remove('drag'); }));
+  stage.addEventListener('drop', async e => {
+    const file = [...e.dataTransfer.files].find(f => f.type.startsWith('image/'));
+    if (!file) return;
+    const url = URL.createObjectURL(file);
+    const { canvas } = await loadImageToCanvas(url);
+    URL.revokeObjectURL(url);
+    state.activeImage = 'dropped';
+    renderActiveImage(canvas, file.name);
+    const out = runMappings(canvas);
+    for (const m of MAPPINGS) renderSwatches($(m.rowEl), out[m.id]);
+    // dropped images don't populate test list — they're exploratory
+    renderCaseList();
+  });
+}
+
+// ── Boot ──────────────────────────────────────────────
+async function boot() {
+  $('runAllBtn').onclick = runAll;
+  $('downloadBtn').onclick = downloadBaselines;
+  wireDragDrop();
+  await loadBaselines();
+  await cacheTestImages();
+  renderCaseList();
+  setStatus(`Loaded ${Object.keys(state.canvases).length} test images. Click one or drop your own.`);
+}
+
+boot();
+</script>
+</body>
+</html>
