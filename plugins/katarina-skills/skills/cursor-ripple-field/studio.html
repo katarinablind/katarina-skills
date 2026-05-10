@@ -1,50 +1,286 @@
+<!--
+  Cursor Ripple Field · Studio
+  ============================
+  Interactive demo for the cursor-ripple-field Claude skill.
+
+  Move or click the canvas to spawn expanding-ring offsets that distort
+  a static dot grid. The ripple field is a pure function of (x, y, t) —
+  the dot grid is just a witness, swappable for any 2D field.
+
+  Tune amplitude, wavelength, ring speed, decay width, and life from
+  the sidebar; pick a preset (sharp pings vs slow slosh).
+
+  Self-contained — open via python3 -m http.server, or file://.
+-->
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Cursor Ripple Field Studio</title>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cursor Ripple Field · Studio</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
-  *, *::before, *::after { box-sizing: border-box; }
-  html, body {
-    margin: 0;
-    height: 100vh;
-    overflow: hidden;
-    background: #0d1419;
-    font-family: ui-sans-serif, system-ui, sans-serif;
-    color: #cbd5e1;
-  }
-  canvas { display: block; width: 100vw; height: 100vh; cursor: crosshair; }
-  .hud {
-    position: fixed; top: 14px; left: 14px;
-    padding: 10px 14px;
-    background: rgba(20,30,40,0.78);
-    border: 1px solid rgba(255,255,255,0.10);
-    border-radius: 10px;
-    font-size: 12px;
-    color: rgba(220,230,240,0.85);
-    backdrop-filter: blur(14px) saturate(180%);
-    -webkit-backdrop-filter: blur(14px) saturate(180%);
-  }
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap');
+:root {
+  --bg:#0a0a0a; --surface:#fff; --surface-muted:#f1f1ee; --surface-dark:#111214;
+  --border:rgba(0,0,0,0.06); --border-dark:rgba(255,255,255,0.05);
+  --text:#141414; --text-muted:rgba(20,20,20,0.55); --text-subtle:rgba(20,20,20,0.38);
+  --text-inverse:#f4f2ec; --text-inverse-muted:rgba(244,242,236,0.55); --text-inverse-subtle:rgba(244,242,236,0.45);
+  --accent:#10b981; --accent-bg:rgba(16,185,129,0.12);
+  --amber:#f59e0b; --blue:#3b82f6; --red:#ef4444; --purple:#8b5cf6;
+  --radius:clamp(18px,2vw,26px); --radius-inner:clamp(10px,1.2vw,16px); --radius-pill:999px;
+  --font:'DM Sans',-apple-system,BlinkMacSystemFont,system-ui,sans-serif;
+  --font-mono:'DM Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+  --fs-heading:14px; --fs-body:12px; --fs-small:11px; --fs-micro:10px; --fs-nano:9px;
+  --fw-regular:400; --fw-medium:500; --fw-semibold:600; --fw-bold:700;
+  --ease:cubic-bezier(0.4,0,0.2,1); --dur-fast:0.18s; --dur-base:0.28s;
+  --shadow:0 1px 2px rgba(15,18,24,0.04),0 10px 28px rgba(15,18,24,0.08);
+  --gutter:clamp(10px,1.4vw,18px); --pad-y:clamp(10px,2vh,24px); --pad-x:clamp(10px,2vw,24px);
+}
+*,*::before,*::after { box-sizing:border-box; margin:0; padding:0; }
+body { background:var(--bg); color:var(--text); font-family:var(--font); -webkit-font-smoothing:antialiased;
+  height:100vh; overflow:hidden; display:flex; gap:var(--gutter); padding:var(--pad-y) var(--pad-x); }
+
+.col-main { flex:1; display:flex; flex-direction:column; gap:var(--gutter); min-width:0; }
+.header { flex:0 0 auto; display:flex; align-items:baseline; justify-content:space-between; padding:0 4px; gap:12px; }
+.h-left { display:flex; align-items:baseline; gap:12px; }
+.eyebrow { font-family:var(--font-mono); font-size:var(--fs-nano); font-weight:var(--fw-medium);
+  letter-spacing:0.14em; text-transform:uppercase; color:var(--text-inverse);
+  background:rgba(244,242,236,0.08); padding:4px 10px; border-radius:var(--radius-pill);
+  border:1px solid rgba(244,242,236,0.10); }
+.h-title { font-size:var(--fs-heading); font-weight:var(--fw-semibold);
+  color:var(--text-inverse-subtle); letter-spacing:-0.01em; }
+.h-byline { font-size:var(--fs-nano); color:var(--text-inverse-subtle);
+  font-weight:var(--fw-regular); letter-spacing:0.06em; text-transform:uppercase; opacity:0.6; }
+
+.main-panel { flex:1 1 0; min-height:0; position:relative;
+  background:var(--surface-muted); border-radius:var(--radius);
+  border:1px solid var(--border); box-shadow:var(--shadow);
+  overflow:hidden; display:flex; flex-direction:column; }
+.stage { flex:1 1 0; min-height:0; position:relative;
+  background:#0d1419;
+  display:flex; align-items:stretch; justify-content:stretch; overflow:hidden; }
+.stage canvas { display:block !important; width:100% !important; height:100% !important; cursor:crosshair; }
+.stage-tag { position:absolute; top:14px; padding:5px 12px;
+  font-size:var(--fs-nano); font-weight:var(--fw-semibold); font-family:var(--font-mono);
+  letter-spacing:0.10em; text-transform:uppercase; color:var(--text-inverse);
+  background:rgba(20,20,24,0.55); backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px);
+  border:1px solid rgba(255,255,255,0.06); border-radius:var(--radius-pill); z-index:2; }
+.stage-tag.left { left:14px; }
+.stage-tag.right { right:14px; display:flex; align-items:center; gap:6px; }
+.stage-tag .dot { width:6px; height:6px; border-radius:50%;
+  background:var(--accent); box-shadow:0 0 8px var(--accent); }
+
+.sidebar { width:320px; min-width:320px; display:flex; flex-direction:column; gap:var(--gutter); }
+.sb-card { background:var(--surface-dark); border-radius:var(--radius);
+  border:1px solid var(--border-dark); box-shadow:var(--shadow);
+  padding:20px 22px; color:var(--text-inverse); }
+.sb-card.scrollable { flex:1 1 0; min-height:0; overflow-y:auto;
+  scrollbar-width:thin; scrollbar-color:rgba(255,255,255,0.08) transparent; }
+.sb-card.scrollable::-webkit-scrollbar { width:3px; }
+.sb-card.scrollable::-webkit-scrollbar-track { background:transparent; }
+.sb-card.scrollable::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.08); border-radius:2px; }
+
+.readout { display:flex; align-items:center; gap:10px;
+  padding:10px 14px; border-radius:var(--radius-pill);
+  background:rgba(244,242,236,0.04); border:1px solid rgba(244,242,236,0.08);
+  font-family:var(--font-mono); font-size:var(--fs-micro);
+  font-weight:var(--fw-medium); letter-spacing:0.06em; color:var(--text-inverse);
+  text-transform:uppercase; font-variant-numeric:tabular-nums; margin-bottom:22px; }
+.readout .dot { width:7px; height:7px; border-radius:50%;
+  background:var(--accent); box-shadow:0 0 10px var(--accent); flex-shrink:0; }
+.readout .stats { flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.readout .sep { color:var(--text-inverse-subtle); margin:0 4px; }
+
+.sb-label { font-size:var(--fs-nano); font-weight:var(--fw-semibold);
+  letter-spacing:0.12em; text-transform:uppercase;
+  color:var(--text-inverse-subtle); margin-bottom:14px; }
+.sb-label:not(:first-of-type) { margin-top:22px; }
+
+.ctrl { margin-bottom:16px; }
+.ctrl:last-child { margin-bottom:0; }
+.ctrl-head { display:flex; align-items:baseline; justify-content:space-between; margin-bottom:6px; }
+.ctrl-name { font-size:var(--fs-small); font-weight:var(--fw-medium);
+  color:var(--text-inverse); letter-spacing:-0.01em; }
+.ctrl-val { font-family:var(--font-mono); font-size:var(--fs-micro);
+  font-weight:var(--fw-medium); color:var(--accent);
+  font-variant-numeric:tabular-nums; letter-spacing:0.02em;
+  min-width:46px; text-align:right; }
+.ctrl-desc { font-size:var(--fs-nano); color:var(--text-inverse-subtle);
+  margin-top:4px; line-height:1.5; letter-spacing:0.02em; }
+
+input[type="range"] { -webkit-appearance:none; appearance:none;
+  width:100%; height:18px; background:transparent; cursor:pointer; display:block; }
+input[type="range"]::-webkit-slider-runnable-track { height:2px;
+  background:rgba(244,242,236,0.10); border-radius:2px; }
+input[type="range"]::-moz-range-track { height:2px;
+  background:rgba(244,242,236,0.10); border-radius:2px; }
+input[type="range"]::-webkit-slider-thumb { -webkit-appearance:none; appearance:none;
+  width:12px; height:12px; border-radius:50%;
+  background:var(--accent); margin-top:-5px;
+  border:2px solid var(--surface-dark);
+  box-shadow:0 0 0 1px rgba(16,185,129,0.4);
+  transition:transform var(--dur-fast) var(--ease); }
+input[type="range"]::-moz-range-thumb { width:12px; height:12px; border-radius:50%;
+  background:var(--accent); border:2px solid var(--surface-dark);
+  box-shadow:0 0 0 1px rgba(16,185,129,0.4);
+  transition:transform var(--dur-fast) var(--ease); }
+input[type="range"]:hover::-webkit-slider-thumb { transform:scale(1.15); }
+input[type="range"]:hover::-moz-range-thumb { transform:scale(1.15); }
+
+.segment { display:flex; padding:3px; gap:2px;
+  border-radius:10px; background:rgba(244,242,236,0.06);
+  border:1px solid rgba(244,242,236,0.08); }
+.segment button { appearance:none; border:0; margin:0; flex:1;
+  padding:6px 10px; border-radius:7px; cursor:pointer;
+  font:var(--fw-medium) var(--fs-micro)/1 var(--font-mono);
+  letter-spacing:0.10em; text-transform:uppercase;
+  color:var(--text-inverse-subtle); background:transparent;
+  transition:all var(--dur-fast) var(--ease); }
+.segment button:hover { color:var(--text-inverse); }
+.segment button.active { background:var(--accent-bg); color:var(--accent);
+  border:1px solid rgba(16,185,129,0.25); }
+
+.detail { font-size:var(--fs-nano); color:var(--text-inverse-muted);
+  line-height:1.65; letter-spacing:0.02em; font-variant-numeric:tabular-nums; }
+.detail code { font-family:var(--font-mono);
+  background:rgba(255,255,255,0.06); padding:1px 5px;
+  border-radius:3px; font-size:9px; color:var(--text-inverse); }
 </style>
 </head>
 <body>
-<canvas id="c"></canvas>
-<div class="hud">Move or click — ripples distort the dot grid</div>
+
+<div class="col-main">
+  <div class="header">
+    <div class="h-left">
+      <span class="eyebrow">Studio · RP-01</span>
+      <span class="h-title">Cursor Ripple Field</span>
+    </div>
+    <div class="h-byline">Pure-function expanding-ring offset</div>
+  </div>
+  <div class="main-panel">
+    <div class="stage" id="stage">
+      <div class="stage-tag left">Move to ripple · click for stronger pulse</div>
+      <div class="stage-tag right"><span class="dot"></span><span id="rippleCount">0 active</span></div>
+      <canvas id="c"></canvas>
+    </div>
+  </div>
+</div>
+
+<div class="sidebar">
+  <div class="sb-card scrollable">
+    <div class="readout">
+      <span class="dot"></span>
+      <span class="stats" id="readout">PRESET DEFAULT <span class="sep">·</span> 60 FPS</span>
+    </div>
+
+    <div class="sb-label">Preset</div>
+    <div class="ctrl">
+      <div class="segment" id="presetSeg">
+        <button data-preset="default" class="active">Default</button>
+        <button data-preset="sharp">Sharp</button>
+        <button data-preset="slosh">Slosh</button>
+      </div>
+      <div class="ctrl-desc">Sharp = raindrops · Slosh = stone in pond.</div>
+    </div>
+
+    <div class="sb-label">Ripple shape</div>
+    <div class="ctrl">
+      <div class="ctrl-head"><span class="ctrl-name">Amplitude</span><span class="ctrl-val" id="vAmp">8</span></div>
+      <input type="range" id="amp" min="1" max="40" step="1" value="8">
+      <div class="ctrl-desc">Base offset magnitude (px).</div>
+    </div>
+    <div class="ctrl">
+      <div class="ctrl-head"><span class="ctrl-name">Wavelength</span><span class="ctrl-val" id="vLambda">110</span></div>
+      <input type="range" id="lambda" min="30" max="320" step="5" value="110">
+      <div class="ctrl-desc">Smaller = more oscillations per ring.</div>
+    </div>
+    <div class="ctrl">
+      <div class="ctrl-head"><span class="ctrl-name">Ring speed</span><span class="ctrl-val" id="vSpeed">200</span></div>
+      <input type="range" id="speed" min="40" max="500" step="10" value="200">
+      <div class="ctrl-desc">How fast the ring expands (units/s).</div>
+    </div>
+    <div class="ctrl">
+      <div class="ctrl-head"><span class="ctrl-name">Decay width</span><span class="ctrl-val" id="vDecay">240</span></div>
+      <input type="range" id="decay" min="40" max="500" step="10" value="240">
+      <div class="ctrl-desc">Gaussian width of the ring envelope.</div>
+    </div>
+    <div class="ctrl">
+      <div class="ctrl-head"><span class="ctrl-name">Life</span><span class="ctrl-val" id="vLife">1.80</span></div>
+      <input type="range" id="life" min="0.3" max="4" step="0.1" value="1.8">
+    </div>
+    <div class="ctrl">
+      <div class="ctrl-head"><span class="ctrl-name">Click amp ×</span><span class="ctrl-val" id="vClickAmp">2.4</span></div>
+      <input type="range" id="clickAmp" min="1" max="6" step="0.1" value="2.4">
+    </div>
+
+    <div class="sb-label">Triggering</div>
+    <div class="ctrl">
+      <div class="ctrl-head"><span class="ctrl-name">Min gap (ms)</span><span class="ctrl-val" id="vMinGap">180</span></div>
+      <input type="range" id="minGap" min="20" max="600" step="10" value="180">
+    </div>
+    <div class="ctrl">
+      <div class="ctrl-head"><span class="ctrl-name">Min dist (px)</span><span class="ctrl-val" id="vMinDist">60</span></div>
+      <input type="range" id="minDist" min="0" max="200" step="5" value="60">
+      <div class="ctrl-desc">Both gates must pass before move triggers a ripple.</div>
+    </div>
+
+    <div class="sb-label">Notes</div>
+    <div class="detail">
+      The offset is a pure function of <code>(x, y, t)</code>. Each ripple
+      contributes <code>−cos(phase) × ringEnvelope × lifeFade × amp</code>,
+      where <code>ringEnvelope = exp(−(d − age·speed)² / decay²)</code>.
+      The ring envelope localizes the wave to the leading edge — that's
+      why it reads as a moving ring instead of a global wobble.
+    </div>
+  </div>
+</div>
+
 <script>
+const params = {
+  amp: 8, lambda: 110, speed: 200, decay: 240, life: 1.8,
+  clickAmp: 2.4, minGap: 180, minDist: 60,
+};
+const presets = {
+  default: { amp:8,  lambda:110, speed:200, decay:240, life:1.8 },
+  sharp:   { amp:10, lambda:70,  speed:350, decay:100, life:1.0 },
+  slosh:   { amp:14, lambda:150, speed:130, decay:320, life:2.5 },
+};
+const sliders = ['amp','lambda','speed','decay','life','clickAmp','minGap','minDist'];
+function fmt(id, v) { return (id === 'life' || id === 'clickAmp') ? v.toFixed(2) : Math.round(v).toString(); }
+for (const id of sliders) {
+  const el = document.getElementById(id);
+  const out = document.getElementById('v' + id[0].toUpperCase() + id.slice(1));
+  el.addEventListener('input', () => {
+    params[id] = parseFloat(el.value);
+    out.textContent = fmt(id, params[id]);
+  });
+  out.textContent = fmt(id, params[id]);
+}
+function applyPreset(name) {
+  const p = presets[name];
+  for (const k in p) {
+    params[k] = p[k];
+    document.getElementById(k).value = p[k];
+    document.getElementById('v' + k[0].toUpperCase() + k.slice(1)).textContent = fmt(k, p[k]);
+  }
+  document.getElementById('readout').innerHTML =
+    `PRESET ${name.toUpperCase()} <span class="sep">·</span> ${fps} FPS`;
+}
+document.querySelectorAll('#presetSeg button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('#presetSeg button').forEach(b => b.classList.toggle('active', b === btn));
+    applyPreset(btn.dataset.preset);
+  });
+});
+
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 const dpr = Math.min(devicePixelRatio || 1, 2);
 let W = 0, H = 0;
 const t0 = performance.now();
-
-const RIPPLE_LIFE = 1.8;
-const RIPPLE_AMP = 8;
-const RIPPLE_LAMBDA = 110;
-const RIPPLE_SPEED = 200;
-const RIPPLE_DECAY = 240;
-const RIPPLE_MIN_GAP_MS = 180;
-const RIPPLE_MIN_DIST = 60;
 const MAX_RIPPLES = 12;
 
 const ripples = [];
@@ -55,8 +291,11 @@ function addRipple(sx, sy, ampMul = 1) {
   ripples.push({
     sx, sy,
     t: (performance.now() - t0) * 0.001,
-    life: RIPPLE_LIFE,
-    amp: RIPPLE_AMP * ampMul,
+    life: params.life,
+    amp: params.amp * ampMul,
+    lambda: params.lambda,
+    speed: params.speed,
+    decay: params.decay,
   });
   if (ripples.length > MAX_RIPPLES) ripples.shift();
 }
@@ -66,20 +305,18 @@ window.addEventListener('mousemove', e => {
   if (e.clientX < r.left || e.clientX > r.right ||
       e.clientY < r.top  || e.clientY > r.bottom) return;
   const now = performance.now();
-  if (now - lastRippleAt < RIPPLE_MIN_GAP_MS) return;
+  if (now - lastRippleAt < params.minGap) return;
   const lx = e.clientX - r.left;
   const ly = e.clientY - r.top;
   const moved = Math.hypot(lx - lastRippleX, ly - lastRippleY);
-  if (moved < RIPPLE_MIN_DIST) return;
+  if (moved < params.minDist) return;
   lastRippleAt = now;
   lastRippleX = lx; lastRippleY = ly;
   addRipple(lx, ly, 1.0);
 });
-window.addEventListener('click', e => {
+canvas.addEventListener('click', e => {
   const r = canvas.getBoundingClientRect();
-  if (e.clientX < r.left || e.clientX > r.right ||
-      e.clientY < r.top  || e.clientY > r.bottom) return;
-  addRipple(e.clientX - r.left, e.clientY - r.top, 2.4);
+  addRipple(e.clientX - r.left, e.clientY - r.top, params.clickAmp);
 });
 
 function rippleOffset(sx, sy, tt) {
@@ -90,30 +327,25 @@ function rippleOffset(sx, sy, tt) {
     const dx = sx - rp.sx;
     const dyR = sy - rp.sy;
     const d = Math.hypot(dx, dyR);
-    const ringR = age * RIPPLE_SPEED;
+    const ringR = age * rp.speed;
     const ringDelta = d - ringR;
-    if (Math.abs(ringDelta) > 4 * RIPPLE_DECAY) continue;
-    const ring = Math.exp(-(ringDelta * ringDelta) / (RIPPLE_DECAY * RIPPLE_DECAY));
-    const phase = (d / RIPPLE_LAMBDA - age * RIPPLE_SPEED / (RIPPLE_LAMBDA * 2)) * Math.PI * 2;
+    if (Math.abs(ringDelta) > 4 * rp.decay) continue;
+    const ring = Math.exp(-(ringDelta * ringDelta) / (rp.decay * rp.decay));
+    const phase = (d / rp.lambda - age * rp.speed / (rp.lambda * 2)) * Math.PI * 2;
     const lifeFade = 1 - age / rp.life;
     dy += -Math.cos(phase) * ring * lifeFade * rp.amp;
   }
   return dy;
 }
 
-let raf = 0;
+let raf = 0, fps = 0, fc = 0, lastFps = performance.now();
 function tick() {
   const tt = (performance.now() - t0) * 0.001;
-
-  // prune
   for (let i = ripples.length - 1; i >= 0; i--) {
     if (tt - ripples[i].t > ripples[i].life) ripples.splice(i, 1);
   }
-
   ctx.clearRect(0, 0, W, H);
 
-  // Render a regular grid of small dots, with each dot's vertical offset
-  // driven by the ripple field at its base position
   const SP = 18;
   const cols = Math.ceil(W / SP) + 1;
   const rows = Math.ceil(H / SP) + 1;
@@ -124,17 +356,27 @@ function tick() {
       const baseX = c * SP;
       const baseY = r * SP;
       const offset = rippleOffset(baseX, baseY, tt);
-      const intensity = Math.min(1, Math.abs(offset) / 8);
+      const intensity = Math.min(1, Math.abs(offset) / Math.max(1, params.amp));
       const radius = 1.2 + intensity * 2.5;
-
-      // Tint brightens with offset magnitude
-      ctx.globalAlpha = 0.35 + intensity * 0.55;
+      ctx.globalAlpha = 0.32 + intensity * 0.55;
       ctx.beginPath();
       ctx.arc(baseX, baseY + offset, radius, 0, Math.PI * 2);
       ctx.fill();
     }
   }
   ctx.globalAlpha = 1;
+
+  document.getElementById('rippleCount').textContent =
+    ripples.length === 1 ? '1 active' : `${ripples.length} active`;
+
+  fc++;
+  const now = performance.now();
+  if (now - lastFps >= 1000) {
+    fps = fc; fc = 0; lastFps = now;
+    const activePreset = document.querySelector('#presetSeg button.active')?.dataset.preset || 'custom';
+    document.getElementById('readout').innerHTML =
+      `PRESET ${activePreset.toUpperCase()} <span class="sep">·</span> ${fps} FPS`;
+  }
   raf = requestAnimationFrame(tick);
 }
 
@@ -146,7 +388,11 @@ function resize() {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 resize();
-window.addEventListener('resize', () => { clearTimeout(resize._t); resize._t = setTimeout(resize, 100); });
+let resizeT;
+new ResizeObserver(() => {
+  clearTimeout(resizeT);
+  resizeT = setTimeout(resize, 100);
+}).observe(document.getElementById('stage'));
 if (!raf) raf = requestAnimationFrame(tick);
 </script>
 </body>

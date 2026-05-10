@@ -1,53 +1,270 @@
+<!--
+  3D Halftone Surface · Studio
+  ============================
+  Interactive demo for the 3d-halftone-surface Claude skill.
+
+  A wave-deformed surface rendered as a perspective-projected grid of
+  image sprites, with stable per-cell variation hashed from (col, row)
+  so the field stays put as the wave animates underneath.
+
+  Tune grid resolution, wave amplitude/scale/speed, camera tilt and
+  depth, and far-row taper from the sidebar.
+
+  Self-contained — open via python3 -m http.server, or file://.
+-->
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>3D Halftone Surface Studio</title>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>3D Halftone Surface · Studio</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
-  *, *::before, *::after { box-sizing: border-box; }
-  html, body {
-    margin: 0;
-    height: 100vh;
-    overflow: hidden;
-    background: linear-gradient(180deg, #d8e3ee 0%, #c8d8ea 60%, #b6cce1 100%);
-    font-family: ui-sans-serif, system-ui, sans-serif;
-  }
-  canvas { display: block; width: 100vw; height: 100vh; }
-  .hud {
-    position: fixed; top: 14px; left: 14px;
-    padding: 10px 14px;
-    background: rgba(255,255,255,0.78);
-    border: 1px solid rgba(20,20,20,0.10);
-    border-radius: 10px;
-    font-size: 12px;
-    color: rgba(20,20,20,0.78);
-    backdrop-filter: blur(14px) saturate(180%);
-    -webkit-backdrop-filter: blur(14px) saturate(180%);
-  }
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap');
+:root {
+  --bg:#0a0a0a; --surface:#fff; --surface-muted:#f1f1ee; --surface-dark:#111214;
+  --border:rgba(0,0,0,0.06); --border-dark:rgba(255,255,255,0.05);
+  --text:#141414; --text-muted:rgba(20,20,20,0.55); --text-subtle:rgba(20,20,20,0.38);
+  --text-inverse:#f4f2ec; --text-inverse-muted:rgba(244,242,236,0.55); --text-inverse-subtle:rgba(244,242,236,0.45);
+  --accent:#10b981; --accent-bg:rgba(16,185,129,0.12);
+  --amber:#f59e0b; --blue:#3b82f6; --red:#ef4444; --purple:#8b5cf6;
+  --radius:clamp(18px,2vw,26px); --radius-inner:clamp(10px,1.2vw,16px); --radius-pill:999px;
+  --font:'DM Sans',-apple-system,BlinkMacSystemFont,system-ui,sans-serif;
+  --font-mono:'DM Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+  --fs-heading:14px; --fs-body:12px; --fs-small:11px; --fs-micro:10px; --fs-nano:9px;
+  --fw-regular:400; --fw-medium:500; --fw-semibold:600; --fw-bold:700;
+  --ease:cubic-bezier(0.4,0,0.2,1); --dur-fast:0.18s; --dur-base:0.28s;
+  --shadow:0 1px 2px rgba(15,18,24,0.04),0 10px 28px rgba(15,18,24,0.08);
+  --gutter:clamp(10px,1.4vw,18px); --pad-y:clamp(10px,2vh,24px); --pad-x:clamp(10px,2vw,24px);
+}
+*,*::before,*::after { box-sizing:border-box; margin:0; padding:0; }
+body { background:var(--bg); color:var(--text); font-family:var(--font); -webkit-font-smoothing:antialiased;
+  height:100vh; overflow:hidden; display:flex; gap:var(--gutter); padding:var(--pad-y) var(--pad-x); }
+
+.col-main { flex:1; display:flex; flex-direction:column; gap:var(--gutter); min-width:0; }
+.header { flex:0 0 auto; display:flex; align-items:baseline; justify-content:space-between; padding:0 4px; gap:12px; }
+.h-left { display:flex; align-items:baseline; gap:12px; }
+.eyebrow { font-family:var(--font-mono); font-size:var(--fs-nano); font-weight:var(--fw-medium);
+  letter-spacing:0.14em; text-transform:uppercase; color:var(--text-inverse);
+  background:rgba(244,242,236,0.08); padding:4px 10px; border-radius:var(--radius-pill);
+  border:1px solid rgba(244,242,236,0.10); }
+.h-title { font-size:var(--fs-heading); font-weight:var(--fw-semibold);
+  color:var(--text-inverse-subtle); letter-spacing:-0.01em; }
+.h-byline { font-size:var(--fs-nano); color:var(--text-inverse-subtle);
+  font-weight:var(--fw-regular); letter-spacing:0.06em; text-transform:uppercase; opacity:0.6; }
+
+.main-panel { flex:1 1 0; min-height:0; position:relative;
+  background:var(--surface-muted); border-radius:var(--radius);
+  border:1px solid var(--border); box-shadow:var(--shadow);
+  overflow:hidden; display:flex; flex-direction:column; }
+.stage { flex:1 1 0; min-height:0; position:relative;
+  background:linear-gradient(180deg,#d8e3ee 0%,#c8d8ea 60%,#b6cce1 100%);
+  display:flex; align-items:stretch; justify-content:stretch; overflow:hidden; }
+.stage canvas { display:block !important; width:100% !important; height:100% !important; }
+.stage-tag { position:absolute; top:14px; padding:5px 12px;
+  font-size:var(--fs-nano); font-weight:var(--fw-semibold); font-family:var(--font-mono);
+  letter-spacing:0.10em; text-transform:uppercase; color:var(--text);
+  background:rgba(255,255,255,0.78); backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px);
+  border:1px solid rgba(20,20,20,0.10); border-radius:var(--radius-pill); z-index:2; }
+.stage-tag.left { left:14px; }
+.stage-tag.right { right:14px; display:flex; align-items:center; gap:6px; }
+.stage-tag .dot { width:6px; height:6px; border-radius:50%;
+  background:var(--accent); box-shadow:0 0 8px var(--accent); }
+
+.sidebar { width:320px; min-width:320px; display:flex; flex-direction:column; gap:var(--gutter); }
+.sb-card { background:var(--surface-dark); border-radius:var(--radius);
+  border:1px solid var(--border-dark); box-shadow:var(--shadow);
+  padding:20px 22px; color:var(--text-inverse); }
+.sb-card.scrollable { flex:1 1 0; min-height:0; overflow-y:auto;
+  scrollbar-width:thin; scrollbar-color:rgba(255,255,255,0.08) transparent; }
+.sb-card.scrollable::-webkit-scrollbar { width:3px; }
+.sb-card.scrollable::-webkit-scrollbar-track { background:transparent; }
+.sb-card.scrollable::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.08); border-radius:2px; }
+
+.readout { display:flex; align-items:center; gap:10px;
+  padding:10px 14px; border-radius:var(--radius-pill);
+  background:rgba(244,242,236,0.04); border:1px solid rgba(244,242,236,0.08);
+  font-family:var(--font-mono); font-size:var(--fs-micro);
+  font-weight:var(--fw-medium); letter-spacing:0.06em; color:var(--text-inverse);
+  text-transform:uppercase; font-variant-numeric:tabular-nums; margin-bottom:22px; }
+.readout .dot { width:7px; height:7px; border-radius:50%;
+  background:var(--accent); box-shadow:0 0 10px var(--accent); flex-shrink:0; }
+.readout .stats { flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.readout .sep { color:var(--text-inverse-subtle); margin:0 4px; }
+
+.sb-label { font-size:var(--fs-nano); font-weight:var(--fw-semibold);
+  letter-spacing:0.12em; text-transform:uppercase;
+  color:var(--text-inverse-subtle); margin-bottom:14px; }
+.sb-label:not(:first-of-type) { margin-top:22px; }
+
+.ctrl { margin-bottom:16px; }
+.ctrl:last-child { margin-bottom:0; }
+.ctrl-head { display:flex; align-items:baseline; justify-content:space-between; margin-bottom:6px; }
+.ctrl-name { font-size:var(--fs-small); font-weight:var(--fw-medium);
+  color:var(--text-inverse); letter-spacing:-0.01em; }
+.ctrl-val { font-family:var(--font-mono); font-size:var(--fs-micro);
+  font-weight:var(--fw-medium); color:var(--accent);
+  font-variant-numeric:tabular-nums; letter-spacing:0.02em;
+  min-width:46px; text-align:right; }
+.ctrl-desc { font-size:var(--fs-nano); color:var(--text-inverse-subtle);
+  margin-top:4px; line-height:1.5; letter-spacing:0.02em; }
+
+input[type="range"] { -webkit-appearance:none; appearance:none;
+  width:100%; height:18px; background:transparent; cursor:pointer; display:block; }
+input[type="range"]::-webkit-slider-runnable-track { height:2px;
+  background:rgba(244,242,236,0.10); border-radius:2px; }
+input[type="range"]::-moz-range-track { height:2px;
+  background:rgba(244,242,236,0.10); border-radius:2px; }
+input[type="range"]::-webkit-slider-thumb { -webkit-appearance:none; appearance:none;
+  width:12px; height:12px; border-radius:50%;
+  background:var(--accent); margin-top:-5px;
+  border:2px solid var(--surface-dark);
+  box-shadow:0 0 0 1px rgba(16,185,129,0.4);
+  transition:transform var(--dur-fast) var(--ease); }
+input[type="range"]::-moz-range-thumb { width:12px; height:12px; border-radius:50%;
+  background:var(--accent); border:2px solid var(--surface-dark);
+  box-shadow:0 0 0 1px rgba(16,185,129,0.4);
+  transition:transform var(--dur-fast) var(--ease); }
+input[type="range"]:hover::-webkit-slider-thumb { transform:scale(1.15); }
+input[type="range"]:hover::-moz-range-thumb { transform:scale(1.15); }
+
+.detail { font-size:var(--fs-nano); color:var(--text-inverse-muted);
+  line-height:1.65; letter-spacing:0.02em; font-variant-numeric:tabular-nums; }
+.detail code { font-family:var(--font-mono);
+  background:rgba(255,255,255,0.06); padding:1px 5px;
+  border-radius:3px; font-size:9px; color:var(--text-inverse); }
 </style>
 </head>
 <body>
-<canvas id="c"></canvas>
-<div class="hud">3D halftone surface — wave projected as image-grid sprites</div>
+
+<div class="col-main">
+  <div class="header">
+    <div class="h-left">
+      <span class="eyebrow">Studio · HS-01</span>
+      <span class="h-title">3D Halftone Surface</span>
+    </div>
+    <div class="h-byline">Wave-projected sprite grid · stable per-cell hash</div>
+  </div>
+  <div class="main-panel">
+    <div class="stage" id="stage">
+      <div class="stage-tag left">4 summed sines · pinhole projection</div>
+      <div class="stage-tag right"><span class="dot"></span>Live</div>
+      <canvas id="c"></canvas>
+    </div>
+  </div>
+</div>
+
+<div class="sidebar">
+  <div class="sb-card scrollable">
+    <div class="readout">
+      <span class="dot"></span>
+      <span class="stats" id="readout">GRID 30×11 <span class="sep">·</span> 60 FPS</span>
+    </div>
+
+    <div class="sb-label">Grid resolution</div>
+    <div class="ctrl">
+      <div class="ctrl-head"><span class="ctrl-name">Cols</span><span class="ctrl-val" id="vCols">30</span></div>
+      <input type="range" id="cols" min="12" max="60" step="2" value="30">
+    </div>
+    <div class="ctrl">
+      <div class="ctrl-head"><span class="ctrl-name">Rows</span><span class="ctrl-val" id="vRows">11</span></div>
+      <input type="range" id="rows" min="5" max="22" step="1" value="11">
+      <div class="ctrl-desc">Closer rows = denser front; bigger sprite cap kicks in.</div>
+    </div>
+
+    <div class="sb-label">Wave</div>
+    <div class="ctrl">
+      <div class="ctrl-head"><span class="ctrl-name">Amplitude</span><span class="ctrl-val" id="vAmp">0.50</span></div>
+      <input type="range" id="amp" min="0" max="1.5" step="0.05" value="0.5">
+    </div>
+    <div class="ctrl">
+      <div class="ctrl-head"><span class="ctrl-name">Spatial freq</span><span class="ctrl-val" id="vWScale">0.45</span></div>
+      <input type="range" id="wScale" min="0.1" max="1.5" step="0.05" value="0.45">
+      <div class="ctrl-desc"><code>k</code> in <code>sin(x·k + tt·s)</code>.</div>
+    </div>
+    <div class="ctrl">
+      <div class="ctrl-head"><span class="ctrl-name">Time freq</span><span class="ctrl-val" id="vWSpd">0.98</span></div>
+      <input type="range" id="wSpd" min="0" max="3" step="0.05" value="0.98">
+    </div>
+
+    <div class="sb-label">Camera</div>
+    <div class="ctrl">
+      <div class="ctrl-head"><span class="ctrl-name">Tilt</span><span class="ctrl-val" id="vTilt">1.15</span></div>
+      <input type="range" id="tilt" min="0.5" max="2" step="0.05" value="1.15">
+      <div class="ctrl-desc">Higher tilt = more bird's-eye, horizon higher.</div>
+    </div>
+    <div class="ctrl">
+      <div class="ctrl-head"><span class="ctrl-name">Depth</span><span class="ctrl-val" id="vCamDepth">4.05</span></div>
+      <input type="range" id="camDepth" min="1.5" max="9" step="0.1" value="4.05">
+    </div>
+    <div class="ctrl">
+      <div class="ctrl-head"><span class="ctrl-name">Far taper</span><span class="ctrl-val" id="vFarTaper">1.80</span></div>
+      <input type="range" id="farTaper" min="0" max="3" step="0.1" value="1.8">
+      <div class="ctrl-desc">How much wider the back row gets in world units.</div>
+    </div>
+    <div class="ctrl">
+      <div class="ctrl-head"><span class="ctrl-name">Distance fade</span><span class="ctrl-val" id="vFade">1.00</span></div>
+      <input type="range" id="fade" min="0" max="2" step="0.05" value="1">
+    </div>
+
+    <div class="sb-label">Sprite size</div>
+    <div class="ctrl">
+      <div class="ctrl-head"><span class="ctrl-name">Base size</span><span class="ctrl-val" id="vDot">10.6</span></div>
+      <input type="range" id="dot" min="2" max="22" step="0.2" value="10.6">
+    </div>
+    <div class="ctrl">
+      <div class="ctrl-head"><span class="ctrl-name">Min cap</span><span class="ctrl-val" id="vDotMin">1.6</span></div>
+      <input type="range" id="dotMin" min="0.5" max="6" step="0.1" value="1.6">
+    </div>
+    <div class="ctrl">
+      <div class="ctrl-head"><span class="ctrl-name">Max cap</span><span class="ctrl-val" id="vDotMax">17.5</span></div>
+      <input type="range" id="dotMax" min="6" max="40" step="0.5" value="17.5">
+      <div class="ctrl-desc">Foreground/background sprite-radius clamp.</div>
+    </div>
+
+    <div class="sb-label">Notes</div>
+    <div class="detail">
+      Each cell on the wave-deformed grid becomes an image sprite.
+      <code>(col, row)</code> is hashed deterministically — same cell always
+      gets the same sprite + rotation. Brightness is driven by world Y, with
+      a sparkle pop on tall crests. Front-row coverage swap ensures every
+      sprite type appears in the closest row.
+    </div>
+  </div>
+</div>
+
 <script>
+const params = {
+  cols: 30, rows: 11,
+  amp: 0.5, wScale: 0.45, wSpd: 0.98,
+  tilt: 1.15, camDepth: 4.05, farTaper: 1.8, fade: 1.0,
+  dot: 10.6, dotMin: 1.6, dotMax: 17.5,
+};
+const sliders = ['cols','rows','amp','wScale','wSpd','tilt','camDepth','farTaper','fade','dot','dotMin','dotMax'];
+let needsRebuild = false;
+for (const id of sliders) {
+  const el = document.getElementById(id);
+  const out = document.getElementById('v' + id[0].toUpperCase() + id.slice(1));
+  const fmt = v => Number.isInteger(params[id]) ? v.toString() : (+v).toFixed(2);
+  el.addEventListener('input', () => {
+    params[id] = parseFloat(el.value);
+    out.textContent = fmt(params[id]);
+    if (id === 'cols' || id === 'rows') needsRebuild = true;
+  });
+  out.textContent = fmt(params[id]);
+}
+
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 const dpr = Math.min(devicePixelRatio || 1, 2);
 let W = 0, H = 0;
 const t0 = performance.now();
-
-const CFG = {
-  cols: 30, rows: 11,
-  dot: 10.6, dotMin: 1.6, dotMax: 17.5,
-  amp: 0.50, wScale: 0.45, wSpd: 0.98,
-  tilt: 1.15, camDepth: 4.05, fade: 1.00,
-  worldW: 15.2, farTaper: 1.80,
-};
 const CAM_H = 1.0;
+const WORLD_W = 15.2;
 const WORLD_D = 12;
 
-/* Procedural sprite palette — six tints ranging from foam to deep blue */
 const SPRITE_COUNT = 6;
 const SPRITE_TINTS = [
   { hi: '#ffffff', mid: '#dbe7f1', lo: '#7997b5' },
@@ -57,8 +274,6 @@ const SPRITE_TINTS = [
   { hi: '#7397b6', mid: '#3d6087', lo: '#172d44' },
   { hi: '#f0e7c0', mid: '#c4b78a', lo: '#5b522d' },
 ];
-const sprites = SPRITE_TINTS.map(t => buildSphereSprite(t));
-
 function buildSphereSprite({ hi, mid, lo }) {
   const c = document.createElement('canvas');
   c.width = c.height = 96;
@@ -72,12 +287,12 @@ function buildSphereSprite({ hi, mid, lo }) {
   cx.beginPath(); cx.arc(r, r, r, 0, Math.PI * 2); cx.fill();
   return c;
 }
+const sprites = SPRITE_TINTS.map(t => buildSphereSprite(t));
 
-let variation = null;
-let varKey = '';
+let variation = null, varKey = '';
 function buildVariation(cols, rows) {
   const key = cols + 'x' + rows;
-  if (varKey === key) return;
+  if (varKey === key && !needsRebuild) return;
   variation = new Array(cols * rows);
   for (let j = 0; j < rows; j++) {
     for (let i = 0; i < cols; i++) {
@@ -93,7 +308,6 @@ function buildVariation(cols, rows) {
       variation[j * cols + i] = { imgIdx, rotation: r3 * Math.PI * 2 };
     }
   }
-
   // Front-row coverage
   const FRONT = 0;
   const presentRow = new Set();
@@ -120,41 +334,42 @@ function buildVariation(cols, rows) {
     }
   }
   varKey = key;
+  needsRebuild = false;
 }
 
 function waveY(x, z, tt) {
-  const k = CFG.wScale, s = CFG.wSpd;
+  const k = params.wScale, s = params.wSpd;
   const a = Math.sin(x * k + tt * s);
   const b = Math.sin(z * k * 1.4 - tt * s * 0.7 + 1.3);
   const c = Math.sin((x + z) * k * 0.55 + tt * s * 1.6 + 2.1);
   const d = Math.sin((x * 0.9 - z * 1.3) * k * 2.1 - tt * s * 1.9);
-  return (a * 0.38 + b * 0.28 + c * 0.20 + d * 0.14) * CFG.amp;
+  return (a * 0.38 + b * 0.28 + c * 0.20 + d * 0.14) * params.amp;
 }
 
 function project(x, y, z) {
-  const D = CFG.camDepth + z;
+  const D = params.camDepth + z;
   if (D <= 0.1) return null;
   const f = Math.min(W, H) * 1.5;
-  const yHorizon = H * (0.30 - CFG.tilt * 0.20);
+  const yHorizon = H * (0.30 - params.tilt * 0.20);
   const sx = W * 0.5 + (x * f) / D;
   const sy = yHorizon + ((CAM_H - y) * f) / D;
   return { sx, sy, scale: f / D };
 }
 
-let raf = 0;
+let raf = 0, fps = 0, fc = 0, lastFps = performance.now();
 function tick() {
   const tt = (performance.now() - t0) * 0.001;
   ctx.clearRect(0, 0, W, H);
 
-  const cols = CFG.cols, rows = CFG.rows;
-  const ampSafe = CFG.amp || 0.0001;
+  const cols = params.cols, rows = params.rows;
+  const ampSafe = params.amp || 0.0001;
   buildVariation(cols, rows);
 
   for (let j = rows - 1; j >= 0; j--) {
     const zt = j / (rows - 1);
     const z = zt * WORLD_D;
-    const fadeA = 1 - Math.pow(zt, 1.8) * CFG.fade;
-    const rowWidth = CFG.worldW * (1 + CFG.farTaper * zt);
+    const fadeA = 1 - Math.pow(zt, 1.8) * params.fade;
+    const rowWidth = WORLD_W * (1 + params.farTaper * zt);
 
     for (let i = 0; i < cols; i++) {
       const xt = i / (cols - 1);
@@ -165,8 +380,8 @@ function tick() {
       if (p.sx < -20 || p.sx > W + 20) continue;
       if (p.sy < -10 || p.sy > H + 10) continue;
 
-      const rRaw = CFG.dot * p.scale * 0.010;
-      const rad = Math.max(CFG.dotMin, Math.min(CFG.dotMax, rRaw));
+      const rRaw = params.dot * p.scale * 0.010;
+      const rad = Math.max(params.dotMin, Math.min(params.dotMax, rRaw));
 
       const crest = y / ampSafe;
       let bright = crest * 0.5 + 0.5;
@@ -175,7 +390,6 @@ function tick() {
 
       const variant = variation[j * cols + i];
       ctx.globalAlpha = Math.max(0, Math.min(1, fadeA * (0.55 + bright * 0.45)));
-
       ctx.save();
       ctx.translate(p.sx, p.sy);
       ctx.rotate(variant.rotation);
@@ -184,6 +398,14 @@ function tick() {
     }
   }
   ctx.globalAlpha = 1;
+
+  fc++;
+  const now = performance.now();
+  if (now - lastFps >= 1000) {
+    fps = fc; fc = 0; lastFps = now;
+    document.getElementById('readout').innerHTML =
+      `GRID ${cols}×${rows} <span class="sep">·</span> ${fps} FPS`;
+  }
   raf = requestAnimationFrame(tick);
 }
 
@@ -195,7 +417,11 @@ function resize() {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 resize();
-window.addEventListener('resize', () => { clearTimeout(resize._t); resize._t = setTimeout(resize, 100); });
+let resizeT;
+new ResizeObserver(() => {
+  clearTimeout(resizeT);
+  resizeT = setTimeout(resize, 100);
+}).observe(document.getElementById('stage'));
 if (!raf) raf = requestAnimationFrame(tick);
 </script>
 </body>

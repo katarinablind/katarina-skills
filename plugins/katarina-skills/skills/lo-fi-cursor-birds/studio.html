@@ -1,82 +1,282 @@
+<!--
+  Lo-Fi Cursor Birds · Studio
+  ===========================
+  Interactive demo for the lo-fi-cursor-birds Claude skill.
+
+  A small flock of curve-glyph birds drifts at a per-bird base velocity,
+  pulls toward the cursor with a falloff-gated force, blends back to
+  base when the cursor leaves. Tune count, size, pull, max speed, and
+  rendering style from the sidebar.
+
+  Self-contained — open via python3 -m http.server, or file://.
+-->
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Lo-Fi Cursor Birds Studio</title>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lo-Fi Cursor Birds · Studio</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
-  *, *::before, *::after { box-sizing: border-box; }
-  html, body {
-    margin: 0;
-    height: 100vh;
-    overflow: hidden;
-    background: linear-gradient(180deg, #d8e3ee 0%, #e9eef4 50%, #f6f8fa 100%);
-    font-family: ui-sans-serif, system-ui, sans-serif;
-  }
-  canvas { display: block; width: 100vw; height: 100vh; }
-  .hud {
-    position: fixed; top: 14px; left: 14px;
-    padding: 10px 14px;
-    background: rgba(255,255,255,0.78);
-    border: 1px solid rgba(20,20,20,0.10);
-    border-radius: 10px;
-    font-size: 12px;
-    color: rgba(20,20,20,0.78);
-    backdrop-filter: blur(14px) saturate(180%);
-    -webkit-backdrop-filter: blur(14px) saturate(180%);
-  }
-  .controls {
-    position: fixed; top: 14px; right: 14px;
-    padding: 10px 14px;
-    background: rgba(255,255,255,0.78);
-    border: 1px solid rgba(20,20,20,0.10);
-    border-radius: 10px;
-    font-size: 11px;
-    color: rgba(20,20,20,0.78);
-    backdrop-filter: blur(14px) saturate(180%);
-  }
-  .controls button {
-    margin-right: 4px; padding: 4px 8px;
-    font-size: 11px; border: 1px solid rgba(20,20,20,0.12);
-    background: rgba(255,255,255,0.6); border-radius: 6px; cursor: pointer;
-  }
-  .controls button.active { background: rgba(20,20,20,0.85); color: #fff; }
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap');
+:root {
+  --bg:#0a0a0a; --surface:#fff; --surface-muted:#f1f1ee; --surface-dark:#111214;
+  --border:rgba(0,0,0,0.06); --border-dark:rgba(255,255,255,0.05);
+  --text:#141414; --text-muted:rgba(20,20,20,0.55); --text-subtle:rgba(20,20,20,0.38);
+  --text-inverse:#f4f2ec; --text-inverse-muted:rgba(244,242,236,0.55); --text-inverse-subtle:rgba(244,242,236,0.45);
+  --accent:#10b981; --accent-bg:rgba(16,185,129,0.12);
+  --amber:#f59e0b; --blue:#3b82f6; --red:#ef4444; --purple:#8b5cf6;
+  --radius:clamp(18px,2vw,26px); --radius-inner:clamp(10px,1.2vw,16px); --radius-pill:999px;
+  --font:'DM Sans',-apple-system,BlinkMacSystemFont,system-ui,sans-serif;
+  --font-mono:'DM Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+  --fs-heading:14px; --fs-body:12px; --fs-small:11px; --fs-micro:10px; --fs-nano:9px;
+  --fw-regular:400; --fw-medium:500; --fw-semibold:600; --fw-bold:700;
+  --ease:cubic-bezier(0.4,0,0.2,1); --dur-fast:0.18s; --dur-base:0.28s;
+  --shadow:0 1px 2px rgba(15,18,24,0.04),0 10px 28px rgba(15,18,24,0.08);
+  --gutter:clamp(10px,1.4vw,18px); --pad-y:clamp(10px,2vh,24px); --pad-x:clamp(10px,2vw,24px);
+}
+*,*::before,*::after { box-sizing:border-box; margin:0; padding:0; }
+body { background:var(--bg); color:var(--text); font-family:var(--font); -webkit-font-smoothing:antialiased;
+  height:100vh; overflow:hidden; display:flex; gap:var(--gutter); padding:var(--pad-y) var(--pad-x); }
+
+.col-main { flex:1; display:flex; flex-direction:column; gap:var(--gutter); min-width:0; }
+.header { flex:0 0 auto; display:flex; align-items:baseline; justify-content:space-between; padding:0 4px; gap:12px; }
+.h-left { display:flex; align-items:baseline; gap:12px; }
+.eyebrow { font-family:var(--font-mono); font-size:var(--fs-nano); font-weight:var(--fw-medium);
+  letter-spacing:0.14em; text-transform:uppercase; color:var(--text-inverse);
+  background:rgba(244,242,236,0.08); padding:4px 10px; border-radius:var(--radius-pill);
+  border:1px solid rgba(244,242,236,0.10); }
+.h-title { font-size:var(--fs-heading); font-weight:var(--fw-semibold);
+  color:var(--text-inverse-subtle); letter-spacing:-0.01em; }
+.h-byline { font-size:var(--fs-nano); color:var(--text-inverse-subtle);
+  font-weight:var(--fw-regular); letter-spacing:0.06em; text-transform:uppercase; opacity:0.6; }
+
+.main-panel { flex:1 1 0; min-height:0; position:relative;
+  background:var(--surface-muted); border-radius:var(--radius);
+  border:1px solid var(--border); box-shadow:var(--shadow);
+  overflow:hidden; display:flex; flex-direction:column; }
+.stage { flex:1 1 0; min-height:0; position:relative;
+  background:linear-gradient(180deg,#d8e3ee 0%,#e9eef4 50%,#f6f8fa 100%);
+  display:flex; align-items:stretch; justify-content:stretch; overflow:hidden; }
+.stage canvas { display:block !important; width:100% !important; height:100% !important; cursor:crosshair; }
+.stage-tag { position:absolute; top:14px; padding:5px 12px;
+  font-size:var(--fs-nano); font-weight:var(--fw-semibold); font-family:var(--font-mono);
+  letter-spacing:0.10em; text-transform:uppercase; color:var(--text);
+  background:rgba(255,255,255,0.78); backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px);
+  border:1px solid rgba(20,20,20,0.10); border-radius:var(--radius-pill); z-index:2; }
+.stage-tag.left { left:14px; }
+.stage-tag.right { right:14px; display:flex; align-items:center; gap:6px; }
+.stage-tag .dot { width:6px; height:6px; border-radius:50%;
+  background:var(--accent); box-shadow:0 0 8px var(--accent); }
+
+.sidebar { width:320px; min-width:320px; display:flex; flex-direction:column; gap:var(--gutter); }
+.sb-card { background:var(--surface-dark); border-radius:var(--radius);
+  border:1px solid var(--border-dark); box-shadow:var(--shadow);
+  padding:20px 22px; color:var(--text-inverse); }
+.sb-card.scrollable { flex:1 1 0; min-height:0; overflow-y:auto;
+  scrollbar-width:thin; scrollbar-color:rgba(255,255,255,0.08) transparent; }
+.sb-card.scrollable::-webkit-scrollbar { width:3px; }
+.sb-card.scrollable::-webkit-scrollbar-track { background:transparent; }
+.sb-card.scrollable::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.08); border-radius:2px; }
+
+.readout { display:flex; align-items:center; gap:10px;
+  padding:10px 14px; border-radius:var(--radius-pill);
+  background:rgba(244,242,236,0.04); border:1px solid rgba(244,242,236,0.08);
+  font-family:var(--font-mono); font-size:var(--fs-micro);
+  font-weight:var(--fw-medium); letter-spacing:0.06em; color:var(--text-inverse);
+  text-transform:uppercase; font-variant-numeric:tabular-nums; margin-bottom:22px; }
+.readout .dot { width:7px; height:7px; border-radius:50%;
+  background:var(--accent); box-shadow:0 0 10px var(--accent); flex-shrink:0; }
+.readout .stats { flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.readout .sep { color:var(--text-inverse-subtle); margin:0 4px; }
+
+.sb-label { font-size:var(--fs-nano); font-weight:var(--fw-semibold);
+  letter-spacing:0.12em; text-transform:uppercase;
+  color:var(--text-inverse-subtle); margin-bottom:14px; }
+.sb-label:not(:first-of-type) { margin-top:22px; }
+
+.ctrl { margin-bottom:16px; }
+.ctrl:last-child { margin-bottom:0; }
+.ctrl-head { display:flex; align-items:baseline; justify-content:space-between; margin-bottom:6px; }
+.ctrl-name { font-size:var(--fs-small); font-weight:var(--fw-medium);
+  color:var(--text-inverse); letter-spacing:-0.01em; }
+.ctrl-val { font-family:var(--font-mono); font-size:var(--fs-micro);
+  font-weight:var(--fw-medium); color:var(--accent);
+  font-variant-numeric:tabular-nums; letter-spacing:0.02em;
+  min-width:46px; text-align:right; }
+.ctrl-desc { font-size:var(--fs-nano); color:var(--text-inverse-subtle);
+  margin-top:4px; line-height:1.5; letter-spacing:0.02em; }
+
+input[type="range"] { -webkit-appearance:none; appearance:none;
+  width:100%; height:18px; background:transparent; cursor:pointer; display:block; }
+input[type="range"]::-webkit-slider-runnable-track { height:2px;
+  background:rgba(244,242,236,0.10); border-radius:2px; }
+input[type="range"]::-moz-range-track { height:2px;
+  background:rgba(244,242,236,0.10); border-radius:2px; }
+input[type="range"]::-webkit-slider-thumb { -webkit-appearance:none; appearance:none;
+  width:12px; height:12px; border-radius:50%;
+  background:var(--accent); margin-top:-5px;
+  border:2px solid var(--surface-dark);
+  box-shadow:0 0 0 1px rgba(16,185,129,0.4);
+  transition:transform var(--dur-fast) var(--ease); }
+input[type="range"]::-moz-range-thumb { width:12px; height:12px; border-radius:50%;
+  background:var(--accent); border:2px solid var(--surface-dark);
+  box-shadow:0 0 0 1px rgba(16,185,129,0.4);
+  transition:transform var(--dur-fast) var(--ease); }
+input[type="range"]:hover::-webkit-slider-thumb { transform:scale(1.15); }
+input[type="range"]:hover::-moz-range-thumb { transform:scale(1.15); }
+
+.segment { display:flex; padding:3px; gap:2px;
+  border-radius:10px; background:rgba(244,242,236,0.06);
+  border:1px solid rgba(244,242,236,0.08); }
+.segment button { appearance:none; border:0; margin:0; flex:1;
+  padding:6px 10px; border-radius:7px; cursor:pointer;
+  font:var(--fw-medium) var(--fs-micro)/1 var(--font-mono);
+  letter-spacing:0.10em; text-transform:uppercase;
+  color:var(--text-inverse-subtle); background:transparent;
+  transition:all var(--dur-fast) var(--ease); }
+.segment button:hover { color:var(--text-inverse); }
+.segment button.active { background:var(--accent-bg); color:var(--accent);
+  border:1px solid rgba(16,185,129,0.25); }
+
+.detail { font-size:var(--fs-nano); color:var(--text-inverse-muted);
+  line-height:1.65; letter-spacing:0.02em; font-variant-numeric:tabular-nums; }
+.detail code { font-family:var(--font-mono);
+  background:rgba(255,255,255,0.06); padding:1px 5px;
+  border-radius:3px; font-size:9px; color:var(--text-inverse); }
 </style>
 </head>
 <body>
-<canvas id="c"></canvas>
-<div class="hud">Move the cursor — birds will follow</div>
-<div class="controls">
-  Style:
-  <button data-style="m" class="active">m</button>
-  <button data-style="v">v</button>
-  <button data-style="dash">dash</button>
-  <button data-style="circle">circle</button>
+
+<div class="col-main">
+  <div class="header">
+    <div class="h-left">
+      <span class="eyebrow">Studio · BD-01</span>
+      <span class="h-title">Lo-Fi Cursor Birds</span>
+    </div>
+    <div class="h-byline">Falloff-gated cursor flock</div>
+  </div>
+  <div class="main-panel">
+    <div class="stage" id="stage">
+      <div class="stage-tag left">Per-bird identity · drift-back to baseVx</div>
+      <div class="stage-tag right"><span class="dot"></span>Move to attract</div>
+      <canvas id="c"></canvas>
+    </div>
+  </div>
 </div>
+
+<div class="sidebar">
+  <div class="sb-card scrollable">
+    <div class="readout">
+      <span class="dot"></span>
+      <span class="stats" id="readout">BIRDS 5 <span class="sep">·</span> 60 FPS</span>
+    </div>
+
+    <div class="sb-label">Flock</div>
+    <div class="ctrl">
+      <div class="ctrl-head"><span class="ctrl-name">Count</span><span class="ctrl-val" id="vCount">5</span></div>
+      <input type="range" id="count" min="1" max="14" step="1" value="5">
+    </div>
+    <div class="ctrl">
+      <div class="ctrl-head"><span class="ctrl-name">Base size</span><span class="ctrl-val" id="vSize">42</span></div>
+      <input type="range" id="size" min="14" max="80" step="2" value="42">
+      <div class="ctrl-desc">Per-bird size = baseSize × (0.75 .. 1.25).</div>
+    </div>
+    <div class="ctrl">
+      <div class="ctrl-head"><span class="ctrl-name">Speed mult</span><span class="ctrl-val" id="vSpeedMult">0.35</span></div>
+      <input type="range" id="speedMult" min="0.05" max="1.5" step="0.05" value="0.35">
+      <div class="ctrl-desc">Multiplier applied to all per-bird velocities.</div>
+    </div>
+
+    <div class="sb-label">Cursor pull</div>
+    <div class="ctrl">
+      <div class="ctrl-head"><span class="ctrl-name">Pull</span><span class="ctrl-val" id="vPull">420</span></div>
+      <input type="range" id="pull" min="50" max="1200" step="20" value="420">
+      <div class="ctrl-desc">Acceleration toward cursor (px/s²).</div>
+    </div>
+    <div class="ctrl">
+      <div class="ctrl-head"><span class="ctrl-name">Max speed</span><span class="ctrl-val" id="vMaxSpeed">160</span></div>
+      <input type="range" id="maxSpeed" min="40" max="500" step="10" value="160">
+      <div class="ctrl-desc">Speed cap. Lower = more "drift," higher = more "chase."</div>
+    </div>
+    <div class="ctrl">
+      <div class="ctrl-head"><span class="ctrl-name">Falloff inner</span><span class="ctrl-val" id="vFalloffInner">25</span></div>
+      <input type="range" id="falloffInner" min="0" max="100" step="5" value="25">
+      <div class="ctrl-desc">No-jitter zone radius around cursor.</div>
+    </div>
+    <div class="ctrl">
+      <div class="ctrl-head"><span class="ctrl-name">Falloff range</span><span class="ctrl-val" id="vFalloffRange">80</span></div>
+      <input type="range" id="falloffRange" min="20" max="300" step="10" value="80">
+    </div>
+
+    <div class="sb-label">Render</div>
+    <div class="ctrl">
+      <div class="ctrl-head"><span class="ctrl-name">Style</span><span class="ctrl-val" id="vStyle">m</span></div>
+      <div class="segment" id="styleSeg">
+        <button data-style="m" class="active">m</button>
+        <button data-style="v">v</button>
+        <button data-style="dash">dash</button>
+        <button data-style="circle">circle</button>
+      </div>
+    </div>
+
+    <div class="sb-label">Notes</div>
+    <div class="detail">
+      Each bird carries a stable <code>baseVx</code>, <code>flapRate</code>, and <code>size</code>.
+      Cursor pull is acceleration with falloff (<code>(d−inner)/range</code>) and a speed cap; no
+      lerp-to-target. When the cursor leaves, velocity exponentially blends back to <code>baseVx</code>
+      over ~1s. An always-visible failsafe re-spawns the closest off-screen bird if all are out.
+    </div>
+  </div>
+</div>
+
 <script>
-const canvas = document.getElementById('c');
-const ctx = canvas.getContext('2d');
-const dpr = Math.min(devicePixelRatio || 1, 2);
-let W = 0, H = 0;
-let style = 'm';
-let birds = [];
+const params = {
+  count: 5, size: 42, speedMult: 0.35,
+  pull: 420, maxSpeed: 160,
+  falloffInner: 25, falloffRange: 80,
+  style: 'm',
+};
+let needsRebuild = false;
+const sliders = ['count','size','speedMult','pull','maxSpeed','falloffInner','falloffRange'];
+for (const id of sliders) {
+  const el = document.getElementById(id);
+  const out = document.getElementById('v' + id[0].toUpperCase() + id.slice(1));
+  const fmt = v => Number.isInteger(v) ? v.toString() : (+v).toFixed(2);
+  el.addEventListener('input', () => {
+    params[id] = parseFloat(el.value);
+    out.textContent = fmt(params[id]);
+    if (id === 'count' || id === 'size') needsRebuild = true;
+  });
+  out.textContent = fmt(params[id]);
+}
+document.querySelectorAll('#styleSeg button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('#styleSeg button').forEach(b => b.classList.toggle('active', b === btn));
+    params.style = btn.dataset.style;
+    document.getElementById('vStyle').textContent = params.style;
+  });
+});
 
 const COLORS = [
-  'rgba(255,255,255,0.96)','rgba(248,250,254,0.94)','rgba(228,238,250,0.92)',
-  'rgba(210,226,245,0.90)','rgba(196,215,232,0.88)','rgba(140,165,195,0.85)',
-  'rgba(70,92,122,0.85)',
+  'rgba(70,92,122,0.85)','rgba(95,120,155,0.85)','rgba(120,145,180,0.85)',
+  'rgba(140,165,195,0.85)','rgba(170,190,215,0.88)','rgba(196,215,232,0.88)',
 ];
 const GRADIENTS = [
-  { hi: 'rgba(255,255,255,1)',  mid: 'rgba(225,238,250,0.96)', lo: 'rgba(155,180,210,0.92)' },
+  { hi: 'rgba(255,255,255,1)',  mid: 'rgba(225,238,250,0.96)', lo: 'rgba(95,125,165,0.92)' },
   { hi: 'rgba(252,255,255,1)',  mid: 'rgba(210,228,245,0.94)', lo: 'rgba(125,155,190,0.92)' },
   { hi: 'rgba(238,248,255,1)',  mid: 'rgba(180,208,235,0.92)', lo: 'rgba(95,125,165,0.92)' },
 ];
 
-const COUNT = 5;
-const BASE_SIZE = 42;
-const SPEED_MULT = 0.35;
-
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const dpr = Math.min(devicePixelRatio || 1, 2);
+let W = 0, H = 0;
+let birds = [];
 let mouseInside = false, mx = 0, my = 0;
+
 window.addEventListener('mousemove', e => {
   const r = canvas.getBoundingClientRect();
   if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) {
@@ -98,8 +298,8 @@ function clampY(b) {
 
 function buildBirds() {
   birds = [];
-  for (let i = 0; i < COUNT; i++) {
-    const size = BASE_SIZE * (0.75 + Math.random() * 0.5);
+  for (let i = 0; i < params.count; i++) {
+    const size = params.size * (0.75 + Math.random() * 0.5);
     const baseVx = (16 + Math.random() * 36) * (Math.random() < 0.5 ? -1 : 1);
     const colorIdx = Math.min(
       Math.floor(Math.random() * COLORS.length),
@@ -117,6 +317,7 @@ function buildBirds() {
       color: COLORS[colorIdx], grad,
     });
   }
+  needsRebuild = false;
 }
 
 function update(dt) {
@@ -124,16 +325,15 @@ function update(dt) {
     if (mouseInside) {
       const dx = mx - b.x, dy = my - b.y;
       const d = Math.hypot(dx, dy) + 1;
-      const falloff = Math.max(0, Math.min(1, (d - 25) / 80));
-      const pull = 420 * falloff;
+      const falloff = Math.max(0, Math.min(1, (d - params.falloffInner) / params.falloffRange));
+      const pull = params.pull * falloff;
       const ux = dx / d, uy = dy / d;
       b.vx += ux * pull * dt;
       b.vy = (b.vy || 0) + uy * pull * dt;
       const speed = Math.hypot(b.vx, b.vy);
-      const maxSpeed = 160;
-      if (speed > maxSpeed) {
-        b.vx *= maxSpeed / speed;
-        b.vy *= maxSpeed / speed;
+      if (speed > params.maxSpeed) {
+        b.vx *= params.maxSpeed / speed;
+        b.vy *= params.maxSpeed / speed;
       }
     } else {
       const blend = 1 - Math.pow(0.35, dt);
@@ -141,16 +341,14 @@ function update(dt) {
       b.vy = (b.vy || 0) * Math.pow(0.4, dt * 4);
       if (Math.abs(b.vy) < 0.4) b.vy = 0;
     }
-    b.x += b.vx * SPEED_MULT * dt;
-    b.y += (b.vy || 0) * SPEED_MULT * dt;
+    b.x += b.vx * params.speedMult * dt;
+    b.y += (b.vy || 0) * params.speedMult * dt;
     b.phase += dt * b.flapRate;
     const pad = b.size * 6;
     if (b.vx > 0 && b.x > W + pad) { b.x = -pad; b.y = pickY(b.size); }
     if (b.vx < 0 && b.x < -pad) { b.x = W + pad; b.y = pickY(b.size); }
     b.y = clampY(b);
   }
-
-  // Vertical separation
   for (let i = 0; i < birds.length; i++) {
     for (let j = i + 1; j < birds.length; j++) {
       const a = birds[i], c = birds[j];
@@ -167,8 +365,6 @@ function update(dt) {
       }
     }
   }
-
-  // Always-visible failsafe
   let anyVisible = false;
   for (const b of birds) if (b.x >= 0 && b.x <= W) { anyVisible = true; break; }
   if (!anyVisible && birds.length) {
@@ -192,6 +388,7 @@ function drawOne(b) {
   ctx.lineCap = 'round'; ctx.lineJoin = 'round';
   ctx.strokeStyle = b.color; ctx.fillStyle = b.color;
 
+  const style = params.style;
   if (style === 'v') {
     const drop = Math.sin(wing) * s * 0.35;
     const up = -s * wing * 0.65;
@@ -224,9 +421,7 @@ function drawOne(b) {
         g.addColorStop(0, b.grad.hi); g.addColorStop(0.55, b.grad.mid); g.addColorStop(1, b.grad.lo);
         ctx.fillStyle = g;
       }
-      ctx.beginPath();
-      ctx.arc(px, py, pr, 0, Math.PI * 2);
-      ctx.fill();
+      ctx.beginPath(); ctx.arc(px, py, pr, 0, Math.PI * 2); ctx.fill();
     };
     drawCircle(cx, cy, bodyR);
     drawCircle(cx - s * 0.55, cy + lift, wingR);
@@ -235,7 +430,9 @@ function drawOne(b) {
 }
 
 let raf = 0, lastT = performance.now();
+let fps = 0, fc = 0, lastFps = lastT;
 function tick() {
+  if (needsRebuild) buildBirds();
   const now = performance.now();
   const dt = Math.min(0.05, (now - lastT) / 1000);
   lastT = now;
@@ -243,6 +440,12 @@ function tick() {
   ctx.clearRect(0, 0, W, H);
   for (const b of birds) drawOne(b);
   ctx.globalAlpha = 1;
+  fc++;
+  if (now - lastFps >= 1000) {
+    fps = fc; fc = 0; lastFps = now;
+    document.getElementById('readout').innerHTML =
+      `BIRDS ${birds.length} <span class="sep">·</span> ${fps} FPS`;
+  }
   raf = requestAnimationFrame(tick);
 }
 
@@ -255,15 +458,11 @@ function resize() {
   buildBirds();
 }
 resize();
-window.addEventListener('resize', () => { clearTimeout(resize._t); resize._t = setTimeout(resize, 100); });
-
-document.querySelectorAll('.controls button').forEach(btn => {
-  btn.addEventListener('click', () => {
-    style = btn.dataset.style;
-    document.querySelectorAll('.controls button').forEach(b => b.classList.toggle('active', b === btn));
-  });
-});
-
+let resizeT;
+new ResizeObserver(() => {
+  clearTimeout(resizeT);
+  resizeT = setTimeout(resize, 100);
+}).observe(document.getElementById('stage'));
 if (!raf) raf = requestAnimationFrame(tick);
 </script>
 </body>

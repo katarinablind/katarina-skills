@@ -1,37 +1,245 @@
+<!--
+  Fluid Mosaic · Studio
+  =====================
+  Interactive demo for the fluid-mosaic Claude skill.
+
+  A noise-warped circular boundary masks a cursor-reactive grid of
+  colored spheres. Tune spacing, size range, motion speed, fluidity,
+  cursor radius / hover scale, and shape size from the sidebar.
+
+  Self-contained — open via python3 -m http.server, or file://.
+  Tokens inlined from data-mapping/shared/tokens.css.
+-->
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Fluid Mosaic Studio</title>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fluid Mosaic · Studio</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+
 <style>
-  *, *::before, *::after { box-sizing: border-box; }
-  html, body {
-    margin: 0;
-    height: 100vh;
-    overflow: hidden;
-    background: linear-gradient(180deg, #e6edf5 0%, #eef2f7 42%, #f7f8fa 100%);
-    font-family: ui-sans-serif, system-ui, sans-serif;
-  }
-  canvas { display: block; width: 100vw; height: 100vh; touch-action: none; }
-  .hud {
-    position: fixed; top: 14px; left: 14px;
-    padding: 10px 14px;
-    background: rgba(255,255,255,0.78);
-    border: 1px solid rgba(20,20,20,0.10);
-    border-radius: 10px;
-    font-size: 12px;
-    color: rgba(20,20,20,0.78);
-    backdrop-filter: blur(14px) saturate(180%);
-    -webkit-backdrop-filter: blur(14px) saturate(180%);
-  }
+/* === Inlined from data-mapping/shared/tokens.css ============================ */
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap');
+:root {
+  --bg:#0a0a0a; --surface:#fff; --surface-muted:#f1f1ee; --surface-dark:#111214;
+  --border:rgba(0,0,0,0.06); --border-dark:rgba(255,255,255,0.05);
+  --text:#141414; --text-muted:rgba(20,20,20,0.55); --text-subtle:rgba(20,20,20,0.38);
+  --text-inverse:#f4f2ec; --text-inverse-muted:rgba(244,242,236,0.55); --text-inverse-subtle:rgba(244,242,236,0.45);
+  --accent:#10b981; --accent-bg:rgba(16,185,129,0.12);
+  --amber:#f59e0b; --blue:#3b82f6; --red:#ef4444; --purple:#8b5cf6;
+  --radius:clamp(18px,2vw,26px); --radius-inner:clamp(10px,1.2vw,16px); --radius-pill:999px;
+  --font:'DM Sans',-apple-system,BlinkMacSystemFont,system-ui,sans-serif;
+  --font-mono:'DM Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+  --fs-heading:14px; --fs-body:12px; --fs-small:11px; --fs-micro:10px; --fs-nano:9px;
+  --fw-regular:400; --fw-medium:500; --fw-semibold:600; --fw-bold:700;
+  --ease:cubic-bezier(0.4,0,0.2,1); --dur-fast:0.18s; --dur-base:0.28s;
+  --shadow:0 1px 2px rgba(15,18,24,0.04),0 10px 28px rgba(15,18,24,0.08);
+  --gutter:clamp(10px,1.4vw,18px); --pad-y:clamp(10px,2vh,24px); --pad-x:clamp(10px,2vw,24px);
+}
+*,*::before,*::after { box-sizing:border-box; margin:0; padding:0; }
+body { background:var(--bg); color:var(--text); font-family:var(--font); -webkit-font-smoothing:antialiased; }
+/* === End inlined tokens.css ================================================ */
+
+body { height:100vh; overflow:hidden; display:flex; gap:var(--gutter); padding:var(--pad-y) var(--pad-x); }
+.col-main { flex:1; display:flex; flex-direction:column; gap:var(--gutter); min-width:0; }
+.header { flex:0 0 auto; display:flex; align-items:baseline; justify-content:space-between; padding:0 4px; gap:12px; }
+.h-left { display:flex; align-items:baseline; gap:12px; }
+.eyebrow { font-family:var(--font-mono); font-size:var(--fs-nano); font-weight:var(--fw-medium);
+  letter-spacing:0.14em; text-transform:uppercase; color:var(--text-inverse);
+  background:rgba(244,242,236,0.08); padding:4px 10px; border-radius:var(--radius-pill);
+  border:1px solid rgba(244,242,236,0.10); }
+.h-title { font-size:var(--fs-heading); font-weight:var(--fw-semibold);
+  color:var(--text-inverse-subtle); letter-spacing:-0.01em; }
+.h-byline { font-size:var(--fs-nano); color:var(--text-inverse-subtle);
+  font-weight:var(--fw-regular); letter-spacing:0.06em; text-transform:uppercase; opacity:0.6; }
+
+.main-panel { flex:1 1 0; min-height:0; position:relative;
+  background:var(--surface-muted); border-radius:var(--radius);
+  border:1px solid var(--border); box-shadow:var(--shadow);
+  overflow:hidden; display:flex; flex-direction:column; }
+.stage { flex:1 1 0; min-height:0; position:relative;
+  background:linear-gradient(180deg,#e6edf5 0%,#eef2f7 42%,#f7f8fa 100%);
+  display:flex; align-items:stretch; justify-content:stretch; overflow:hidden; }
+.stage canvas { display:block !important; width:100% !important; height:100% !important; cursor:crosshair; }
+.stage-tag { position:absolute; top:14px; padding:5px 12px;
+  font-size:var(--fs-nano); font-weight:var(--fw-semibold); font-family:var(--font-mono);
+  letter-spacing:0.10em; text-transform:uppercase; color:var(--text);
+  background:rgba(255,255,255,0.78); backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px);
+  border:1px solid rgba(20,20,20,0.10); border-radius:var(--radius-pill); z-index:2; }
+.stage-tag.left { left:14px; }
+.stage-tag.right { right:14px; display:flex; align-items:center; gap:6px; }
+.stage-tag .dot { width:6px; height:6px; border-radius:50%;
+  background:var(--accent); box-shadow:0 0 8px var(--accent); }
+
+.sidebar { width:320px; min-width:320px; display:flex; flex-direction:column; gap:var(--gutter); }
+.sb-card { background:var(--surface-dark); border-radius:var(--radius);
+  border:1px solid var(--border-dark); box-shadow:var(--shadow);
+  padding:20px 22px; color:var(--text-inverse); }
+.sb-card.scrollable { flex:1 1 0; min-height:0; overflow-y:auto;
+  scrollbar-width:thin; scrollbar-color:rgba(255,255,255,0.08) transparent; }
+.sb-card.scrollable::-webkit-scrollbar { width:3px; }
+.sb-card.scrollable::-webkit-scrollbar-track { background:transparent; }
+.sb-card.scrollable::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.08); border-radius:2px; }
+
+.readout { display:flex; align-items:center; gap:10px;
+  padding:10px 14px; border-radius:var(--radius-pill);
+  background:rgba(244,242,236,0.04); border:1px solid rgba(244,242,236,0.08);
+  font-family:var(--font-mono); font-size:var(--fs-micro);
+  font-weight:var(--fw-medium); letter-spacing:0.06em; color:var(--text-inverse);
+  text-transform:uppercase; font-variant-numeric:tabular-nums; margin-bottom:22px; }
+.readout .dot { width:7px; height:7px; border-radius:50%;
+  background:var(--accent); box-shadow:0 0 10px var(--accent); flex-shrink:0; }
+.readout .stats { flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.readout .sep { color:var(--text-inverse-subtle); margin:0 4px; }
+
+.sb-label { font-size:var(--fs-nano); font-weight:var(--fw-semibold);
+  letter-spacing:0.12em; text-transform:uppercase;
+  color:var(--text-inverse-subtle); margin-bottom:14px; }
+.sb-label:not(:first-of-type) { margin-top:22px; }
+
+.ctrl { margin-bottom:16px; }
+.ctrl:last-child { margin-bottom:0; }
+.ctrl-head { display:flex; align-items:baseline; justify-content:space-between; margin-bottom:6px; }
+.ctrl-name { font-size:var(--fs-small); font-weight:var(--fw-medium);
+  color:var(--text-inverse); letter-spacing:-0.01em; }
+.ctrl-val { font-family:var(--font-mono); font-size:var(--fs-micro);
+  font-weight:var(--fw-medium); color:var(--accent);
+  font-variant-numeric:tabular-nums; letter-spacing:0.02em;
+  min-width:46px; text-align:right; }
+.ctrl-desc { font-size:var(--fs-nano); color:var(--text-inverse-subtle);
+  margin-top:4px; line-height:1.5; letter-spacing:0.02em; }
+
+input[type="range"] { -webkit-appearance:none; appearance:none;
+  width:100%; height:18px; background:transparent; cursor:pointer; display:block; }
+input[type="range"]::-webkit-slider-runnable-track { height:2px;
+  background:rgba(244,242,236,0.10); border-radius:2px; }
+input[type="range"]::-moz-range-track { height:2px;
+  background:rgba(244,242,236,0.10); border-radius:2px; }
+input[type="range"]::-webkit-slider-thumb { -webkit-appearance:none; appearance:none;
+  width:12px; height:12px; border-radius:50%;
+  background:var(--accent); margin-top:-5px;
+  border:2px solid var(--surface-dark);
+  box-shadow:0 0 0 1px rgba(16,185,129,0.4);
+  transition:transform var(--dur-fast) var(--ease); }
+input[type="range"]::-moz-range-thumb { width:12px; height:12px; border-radius:50%;
+  background:var(--accent); border:2px solid var(--surface-dark);
+  box-shadow:0 0 0 1px rgba(16,185,129,0.4);
+  transition:transform var(--dur-fast) var(--ease); }
+input[type="range"]:hover::-webkit-slider-thumb { transform:scale(1.15); }
+input[type="range"]:hover::-moz-range-thumb { transform:scale(1.15); }
+
+.detail { font-size:var(--fs-nano); color:var(--text-inverse-muted);
+  line-height:1.65; letter-spacing:0.02em; font-variant-numeric:tabular-nums; }
+.detail code { font-family:var(--font-mono);
+  background:rgba(255,255,255,0.06); padding:1px 5px;
+  border-radius:3px; font-size:9px; color:var(--text-inverse); }
 </style>
 </head>
 <body>
-<canvas id="c"></canvas>
-<div class="hud">Move the cursor — fluid mosaic</div>
+
+<div class="col-main">
+  <div class="header">
+    <div class="h-left">
+      <span class="eyebrow">Studio · FM-01</span>
+      <span class="h-title">Fluid Mosaic</span>
+    </div>
+    <div class="h-byline">Cursor-reactive image-circle blob</div>
+  </div>
+  <div class="main-panel">
+    <div class="stage" id="stage">
+      <div class="stage-tag left">Noise-warped boundary · radial cursor push</div>
+      <div class="stage-tag right"><span class="dot"></span>Hover to deform</div>
+      <canvas id="c"></canvas>
+    </div>
+  </div>
+</div>
+
+<div class="sidebar">
+  <div class="sb-card scrollable">
+    <div class="readout">
+      <span class="dot"></span>
+      <span class="stats" id="readout">DOTS — <span class="sep">·</span> SPACING 40 <span class="sep">·</span> 60 FPS</span>
+    </div>
+
+    <div class="sb-label">Grid</div>
+    <div class="ctrl">
+      <div class="ctrl-head"><span class="ctrl-name">Spacing</span><span class="ctrl-val" id="vSpacing">40</span></div>
+      <input type="range" id="spacing" min="20" max="80" step="2" value="40">
+      <div class="ctrl-desc">Distance between adjacent dot centers (px). Lower = denser blob.</div>
+    </div>
+    <div class="ctrl">
+      <div class="ctrl-head"><span class="ctrl-name">Size min</span><span class="ctrl-val" id="vSizeMin">2</span></div>
+      <input type="range" id="sizeMin" min="1" max="8" step="0.5" value="2">
+    </div>
+    <div class="ctrl">
+      <div class="ctrl-head"><span class="ctrl-name">Size max</span><span class="ctrl-val" id="vSizeMax">16</span></div>
+      <input type="range" id="sizeMax" min="6" max="32" step="0.5" value="16">
+      <div class="ctrl-desc">Dot radius range. Min at edge, max at center of blob.</div>
+    </div>
+
+    <div class="sb-label">Motion</div>
+    <div class="ctrl">
+      <div class="ctrl-head"><span class="ctrl-name">Motion speed</span><span class="ctrl-val" id="vMotionSpeed">2.0</span></div>
+      <input type="range" id="motionSpeed" min="0.2" max="5" step="0.1" value="2">
+    </div>
+    <div class="ctrl">
+      <div class="ctrl-head"><span class="ctrl-name">Fluidity</span><span class="ctrl-val" id="vFluidity">0.60</span></div>
+      <input type="range" id="fluidity" min="0" max="1.2" step="0.05" value="0.6">
+      <div class="ctrl-desc">Per-dot warp + boundary wobble strength.</div>
+    </div>
+    <div class="ctrl">
+      <div class="ctrl-head"><span class="ctrl-name">Shape size</span><span class="ctrl-val" id="vShapeSize">0.85</span></div>
+      <input type="range" id="shapeSize" min="0.3" max="1.5" step="0.05" value="0.85">
+      <div class="ctrl-desc">Boundary radius (× baseRadius).</div>
+    </div>
+
+    <div class="sb-label">Cursor</div>
+    <div class="ctrl">
+      <div class="ctrl-head"><span class="ctrl-name">Radius</span><span class="ctrl-val" id="vCursorRadius">285</span></div>
+      <input type="range" id="cursorRadius" min="60" max="500" step="10" value="285">
+    </div>
+    <div class="ctrl">
+      <div class="ctrl-head"><span class="ctrl-name">Hover scale</span><span class="ctrl-val" id="vHoverScale">0.25</span></div>
+      <input type="range" id="hoverScale" min="0" max="0.6" step="0.02" value="0.25">
+      <div class="ctrl-desc">Size boost at cursor; push amount scales with radius.</div>
+    </div>
+
+    <div class="sb-label">Notes</div>
+    <div class="detail">
+      Dots inside the noise-warped circular boundary scale up by edge-distance
+      and wiggle in place. Cursor pushes radially within <code>radius</code>,
+      with falloff² and proportional <code>pushAmt</code>. EMA smoothing at
+      <code>α=0.1</code> on x/y/size/opacity gives the viscous feel.
+    </div>
+  </div>
+</div>
+
 <script>
-/* ── Perlin noise (drives the blob shape) ───────────────────────────── */
+/* ── Studio params (read by sketch each frame) ─────────────────── */
+const params = {
+  spacing: 40, sizeMin: 2, sizeMax: 16,
+  motionSpeed: 2.0, fluidity: 0.6, shapeSize: 0.85,
+  cursorRadius: 285, hoverScale: 0.25,
+};
+const sliders = ['spacing','sizeMin','sizeMax','motionSpeed','fluidity','shapeSize','cursorRadius','hoverScale'];
+let needsRebuild = false;
+for (const id of sliders) {
+  const el = document.getElementById(id);
+  const out = document.getElementById('v' + id[0].toUpperCase() + id.slice(1));
+  const fmt = v => Number.isInteger(v) ? v.toString() : (+v).toFixed(2);
+  el.addEventListener('input', () => {
+    params[id] = parseFloat(el.value);
+    out.textContent = fmt(params[id]);
+    if (id === 'spacing' || id === 'sizeMin' || id === 'sizeMax') needsRebuild = true;
+  });
+  out.textContent = fmt(params[id]);
+}
+
+/* ── Perlin noise ───────────────────────────────────────────── */
 const noise = (() => {
   const p = new Uint8Array(512), pm = new Uint8Array(256);
   for (let i = 0; i < 256; i++) pm[i] = i;
@@ -76,174 +284,172 @@ const SPHERE_SPRITE = buildSphereSprite([
   [1,    'rgba(30,25,70,1)'],
 ]);
 
-class MosaicField {
-  constructor(canvas, opts = {}) {
-    this.canvas = canvas;
-    this.ctx = canvas.getContext('2d');
-    this.dpr = Math.min(devicePixelRatio || 1, 2);
-    this.mx = -9999; this.my = -9999;
-    this.dots = [];
-    this.opts = Object.assign({
-      spacing: 40, sizeMin: 2, sizeMax: 16,
-      motionSpeed: 2.0, fluidity: 0.6,
-      cursorRadius: 285, hoverScale: 0.25, shapeSize: 0.85,
-    }, opts);
-    this.setup();
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const dpr = Math.min(devicePixelRatio || 1, 2);
+let W = 0, H = 0, mx = -9999, my = -9999;
+let dots = [];
+let centerX = 0, centerY = 0, baseRadius = 0;
 
-    const setPointer = (cx, cy) => {
-      const r = canvas.getBoundingClientRect();
-      this.mx = (cx - r.left) * (this.W / r.width);
-      this.my = (cy - r.top)  * (this.H / r.height);
-    };
-    const clearPointer = () => { this.mx = -9999; this.my = -9999; };
-    canvas.addEventListener('pointermove', e => setPointer(e.clientX, e.clientY));
-    canvas.addEventListener('pointerleave', clearPointer);
-  }
+function setup() {
+  const rect = canvas.getBoundingClientRect();
+  W = rect.width; H = rect.height;
+  canvas.width = W * dpr;
+  canvas.height = H * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-  setup() {
-    const rect = this.canvas.getBoundingClientRect();
-    this.W = rect.width; this.H = rect.height;
-    this.canvas.width = this.W * this.dpr;
-    this.canvas.height = this.H * this.dpr;
-    this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+  const sp = params.spacing;
+  centerX = W * 0.5;
+  centerY = H * 0.5;
+  baseRadius = Math.min(W, H) * 0.42;
 
-    const sp = this.opts.spacing;
-    this.sizeMinCached = this.opts.sizeMin;
-    this.sizeRangeCached = Math.max(0.5, this.opts.sizeMax - this.opts.sizeMin);
+  const MAX = 2.0, margin = 2.6;
+  const gridR = baseRadius * MAX;
+  const c0 = Math.floor((centerX - gridR * margin) / sp);
+  const c1 = Math.ceil( (centerX + gridR * margin) / sp);
+  const r0 = Math.floor((centerY - gridR * margin) / sp);
+  const r1 = Math.ceil( (centerY + gridR * margin) / sp);
 
-    this.centerX = this.W * 0.5;
-    this.centerY = this.H * 0.5;
-    this.baseRadius = Math.min(this.W, this.H) * 0.42;
-
-    const MAX = 2.0, margin = 2.6;
-    const gridR = this.baseRadius * MAX;
-    const c0 = Math.floor((this.centerX - gridR * margin) / sp);
-    const c1 = Math.ceil( (this.centerX + gridR * margin) / sp);
-    const r0 = Math.floor((this.centerY - gridR * margin) / sp);
-    const r1 = Math.ceil( (this.centerY + gridR * margin) / sp);
-
-    this.dots = [];
-    for (let r = r0; r < r1; r++) {
-      for (let c = c0; c < c1; c++) {
-        const bx = c * sp, by = r * sp;
-        this.dots.push({
-          x: bx, y: by, baseX: bx, baseY: by, col: c, row: r,
-          size: 0, tx: bx, ty: by, ts: 0, opacity: 0, to: 0,
-          rotation: Math.random() * Math.PI * 2,
-          color: PRISM_PALETTE[Math.floor(Math.random() * PRISM_PALETTE.length)],
-          isSphere: Math.random() < 0.5,
-        });
-      }
+  dots = [];
+  for (let r = r0; r < r1; r++) {
+    for (let c = c0; c < c1; c++) {
+      const bx = c * sp, by = r * sp;
+      dots.push({
+        x: bx, y: by, baseX: bx, baseY: by, col: c, row: r,
+        size: 0, tx: bx, ty: by, ts: 0, opacity: 0, to: 0,
+        rotation: Math.random() * Math.PI * 2,
+        color: PRISM_PALETTE[Math.floor(Math.random() * PRISM_PALETTE.length)],
+        isSphere: Math.random() < 0.5,
+      });
     }
   }
-
-  update(t) {
-    const tt = t * this.opts.motionSpeed;
-    const fluid = this.opts.fluidity;
-    const cxA = this.centerX + noise(tt * 0.08, 0) * 55;
-    const cyA = this.centerY + noise(0, tt * 0.08) * 42;
-    const breathe = 0.94 + noise(tt * 0.13, 7) * 0.1;
-    const rA = this.baseRadius * this.opts.shapeSize * breathe;
-
-    for (const d of this.dots) {
-      let nx = (d.baseX - cxA) / rA;
-      let ny = (d.baseY - cyA) / rA;
-      if (fluid > 0.001) {
-        const wfx = d.baseX * 0.0032, wfy = d.baseY * 0.0032;
-        const warpAmp = fluid * 0.9;
-        nx += noise(wfx + tt * 0.15, wfy + tt * 0.08) * warpAmp;
-        ny += noise(wfx - tt * 0.10 + 50, wfy + tt * 0.13 + 50) * warpAmp;
-      }
-      const circDist = nx * nx + ny * ny;
-      const angle = Math.atan2(ny, nx);
-      const boundAmp = 0.38 + fluid * 0.28;
-      const boundaryNoise = noise(angle * 2 + tt * 0.22, tt * 0.14) * boundAmp;
-      const threshold = 1.0 + boundaryNoise;
-
-      if (circDist < threshold) {
-        const edgeDist = 1 - circDist / threshold;
-        d.ts = this.sizeMinCached + edgeDist * this.sizeRangeCached;
-        d.to = 0.25 + edgeDist * 0.72;
-        const n1 = noise(d.col * 0.1 + tt * 0.18, d.row * 0.1 + tt * 0.12);
-        const n2 = noise(d.col * 0.06 - tt * 0.1, d.row * 0.06 + tt * 0.08);
-        const movement = (1 - edgeDist * 0.6) * 4;
-        d.tx = d.baseX + n1 * movement;
-        d.ty = d.baseY + n2 * movement;
-      } else {
-        d.ts = 0; d.to = 0;
-        d.tx = d.baseX; d.ty = d.baseY;
-      }
-
-      const dx = d.x - this.mx, dy = d.y - this.my;
-      const dist = Math.sqrt(dx * dx + dy * dy);
-      const cursorR = this.opts.cursorRadius;
-      if (dist < cursorR) {
-        const hover = 1 - dist / cursorR;
-        const falloff = hover * hover;
-        d.ts *= 1 + hover * this.opts.hoverScale;
-        d.to = Math.min(1, d.opacity + hover * 0.6);
-        if (dist > 0.5) {
-          const pushAmt = falloff * (cursorR * 0.23);
-          d.tx += (dx / dist) * pushAmt;
-          d.ty += (dy / dist) * pushAmt;
-        }
-      }
-    }
-
-    const spd = 0.1;
-    for (const d of this.dots) {
-      d.x += (d.tx - d.x) * spd;
-      d.y += (d.ty - d.y) * spd;
-      d.size += (d.ts - d.size) * spd;
-      d.opacity += (d.to - d.opacity) * spd;
-    }
-  }
-
-  draw() {
-    const ctx = this.ctx;
-    ctx.clearRect(0, 0, this.W, this.H);
-    for (const d of this.dots) {
-      if (d.size < 1 || d.opacity < 0.01) continue;
-      ctx.save();
-      ctx.globalAlpha = Math.min(1, d.opacity);
-      ctx.translate(d.x, d.y);
-      ctx.rotate(d.rotation);
-      ctx.beginPath();
-      ctx.arc(0, 0, d.size, 0, Math.PI * 2);
-      ctx.closePath();
-
-      if (d.isSphere) {
-        ctx.fillStyle = d.color;
-        ctx.fill();
-        ctx.globalCompositeOperation = 'soft-light';
-        ctx.drawImage(SPHERE_SPRITE, -d.size, -d.size, d.size * 2, d.size * 2);
-      } else {
-        ctx.fillStyle = d.color;
-        ctx.fill();
-      }
-      ctx.restore();
-    }
-    ctx.globalAlpha = 1;
-  }
-
-  animate() {
-    if (!this.active) return;
-    requestAnimationFrame(() => this.animate());
-    this.update(performance.now() * 0.001);
-    this.draw();
-  }
-  start() { this.active = true; this.animate(); }
-  stop()  { this.active = false; }
+  needsRebuild = false;
+  updateReadout();
 }
 
-const field = new MosaicField(document.getElementById('c'));
-field.start();
+function updateReadout() {
+  document.getElementById('readout').innerHTML =
+    `DOTS ${dots.length} <span class="sep">·</span> SPACING ${params.spacing} <span class="sep">·</span> ${fps|0} FPS`;
+}
+
+function update(t) {
+  const tt = t * params.motionSpeed;
+  const fluid = params.fluidity;
+  const sizeMin = params.sizeMin;
+  const sizeRange = Math.max(0.5, params.sizeMax - params.sizeMin);
+
+  const cxA = centerX + noise(tt * 0.08, 0) * 55;
+  const cyA = centerY + noise(0, tt * 0.08) * 42;
+  const breathe = 0.94 + noise(tt * 0.13, 7) * 0.1;
+  const rA = baseRadius * params.shapeSize * breathe;
+
+  for (const d of dots) {
+    let nx = (d.baseX - cxA) / rA;
+    let ny = (d.baseY - cyA) / rA;
+    if (fluid > 0.001) {
+      const wfx = d.baseX * 0.0032, wfy = d.baseY * 0.0032;
+      const warpAmp = fluid * 0.9;
+      nx += noise(wfx + tt * 0.15, wfy + tt * 0.08) * warpAmp;
+      ny += noise(wfx - tt * 0.10 + 50, wfy + tt * 0.13 + 50) * warpAmp;
+    }
+    const circDist = nx * nx + ny * ny;
+    const angle = Math.atan2(ny, nx);
+    const boundAmp = 0.38 + fluid * 0.28;
+    const boundaryNoise = noise(angle * 2 + tt * 0.22, tt * 0.14) * boundAmp;
+    const threshold = 1.0 + boundaryNoise;
+
+    if (circDist < threshold) {
+      const edgeDist = 1 - circDist / threshold;
+      d.ts = sizeMin + edgeDist * sizeRange;
+      d.to = 0.25 + edgeDist * 0.72;
+      const n1 = noise(d.col * 0.1 + tt * 0.18, d.row * 0.1 + tt * 0.12);
+      const n2 = noise(d.col * 0.06 - tt * 0.1, d.row * 0.06 + tt * 0.08);
+      const movement = (1 - edgeDist * 0.6) * 4;
+      d.tx = d.baseX + n1 * movement;
+      d.ty = d.baseY + n2 * movement;
+    } else {
+      d.ts = 0; d.to = 0;
+      d.tx = d.baseX; d.ty = d.baseY;
+    }
+
+    const dx = d.x - mx, dy = d.y - my;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    const cursorR = params.cursorRadius;
+    if (dist < cursorR) {
+      const hover = 1 - dist / cursorR;
+      const falloff = hover * hover;
+      d.ts *= 1 + hover * params.hoverScale;
+      d.to = Math.min(1, d.opacity + hover * 0.6);
+      if (dist > 0.5) {
+        const pushAmt = falloff * (cursorR * 0.23);
+        d.tx += (dx / dist) * pushAmt;
+        d.ty += (dy / dist) * pushAmt;
+      }
+    }
+  }
+
+  const spd = 0.1;
+  for (const d of dots) {
+    d.x += (d.tx - d.x) * spd;
+    d.y += (d.ty - d.y) * spd;
+    d.size += (d.ts - d.size) * spd;
+    d.opacity += (d.to - d.opacity) * spd;
+  }
+}
+
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+  for (const d of dots) {
+    if (d.size < 1 || d.opacity < 0.01) continue;
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, d.opacity);
+    ctx.translate(d.x, d.y);
+    ctx.rotate(d.rotation);
+    ctx.beginPath();
+    ctx.arc(0, 0, d.size, 0, Math.PI * 2);
+    ctx.closePath();
+    if (d.isSphere) {
+      ctx.fillStyle = d.color;
+      ctx.fill();
+      ctx.globalCompositeOperation = 'soft-light';
+      ctx.drawImage(SPHERE_SPRITE, -d.size, -d.size, d.size * 2, d.size * 2);
+    } else {
+      ctx.fillStyle = d.color;
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+  ctx.globalAlpha = 1;
+}
+
+let raf = 0, fps = 0, fc = 0, lastFps = performance.now();
+function loop() {
+  if (needsRebuild) setup();
+  update(performance.now() * 0.001);
+  draw();
+  fc++;
+  const now = performance.now();
+  if (now - lastFps >= 1000) { fps = fc; fc = 0; lastFps = now; updateReadout(); }
+  raf = requestAnimationFrame(loop);
+}
+
+const setPointer = (cx, cy) => {
+  const r = canvas.getBoundingClientRect();
+  mx = (cx - r.left) * (W / r.width);
+  my = (cy - r.top)  * (H / r.height);
+};
+const clearPointer = () => { mx = -9999; my = -9999; };
+canvas.addEventListener('pointermove', e => setPointer(e.clientX, e.clientY));
+canvas.addEventListener('pointerleave', clearPointer);
+
+setup();
+raf = requestAnimationFrame(loop);
 
 let resizeT;
-window.addEventListener('resize', () => {
+new ResizeObserver(() => {
   clearTimeout(resizeT);
-  resizeT = setTimeout(() => { field.stop(); field.setup(); field.start(); }, 100);
-});
+  resizeT = setTimeout(() => setup(), 100);
+}).observe(document.getElementById('stage'));
 </script>
 </body>
 </html>
