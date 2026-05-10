@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lo-Fi Cursor Birds Studio</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    height: 100vh;
+    overflow: hidden;
+    background: linear-gradient(180deg, #d8e3ee 0%, #e9eef4 50%, #f6f8fa 100%);
+    font-family: ui-sans-serif, system-ui, sans-serif;
+  }
+  canvas { display: block; width: 100vw; height: 100vh; }
+  .hud {
+    position: fixed; top: 14px; left: 14px;
+    padding: 10px 14px;
+    background: rgba(255,255,255,0.78);
+    border: 1px solid rgba(20,20,20,0.10);
+    border-radius: 10px;
+    font-size: 12px;
+    color: rgba(20,20,20,0.78);
+    backdrop-filter: blur(14px) saturate(180%);
+    -webkit-backdrop-filter: blur(14px) saturate(180%);
+  }
+  .controls {
+    position: fixed; top: 14px; right: 14px;
+    padding: 10px 14px;
+    background: rgba(255,255,255,0.78);
+    border: 1px solid rgba(20,20,20,0.10);
+    border-radius: 10px;
+    font-size: 11px;
+    color: rgba(20,20,20,0.78);
+    backdrop-filter: blur(14px) saturate(180%);
+  }
+  .controls button {
+    margin-right: 4px; padding: 4px 8px;
+    font-size: 11px; border: 1px solid rgba(20,20,20,0.12);
+    background: rgba(255,255,255,0.6); border-radius: 6px; cursor: pointer;
+  }
+  .controls button.active { background: rgba(20,20,20,0.85); color: #fff; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hud">Move the cursor — birds will follow</div>
+<div class="controls">
+  Style:
+  <button data-style="m" class="active">m</button>
+  <button data-style="v">v</button>
+  <button data-style="dash">dash</button>
+  <button data-style="circle">circle</button>
+</div>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const dpr = Math.min(devicePixelRatio || 1, 2);
+let W = 0, H = 0;
+let style = 'm';
+let birds = [];
+
+const COLORS = [
+  'rgba(255,255,255,0.96)','rgba(248,250,254,0.94)','rgba(228,238,250,0.92)',
+  'rgba(210,226,245,0.90)','rgba(196,215,232,0.88)','rgba(140,165,195,0.85)',
+  'rgba(70,92,122,0.85)',
+];
+const GRADIENTS = [
+  { hi: 'rgba(255,255,255,1)',  mid: 'rgba(225,238,250,0.96)', lo: 'rgba(155,180,210,0.92)' },
+  { hi: 'rgba(252,255,255,1)',  mid: 'rgba(210,228,245,0.94)', lo: 'rgba(125,155,190,0.92)' },
+  { hi: 'rgba(238,248,255,1)',  mid: 'rgba(180,208,235,0.92)', lo: 'rgba(95,125,165,0.92)' },
+];
+
+const COUNT = 5;
+const BASE_SIZE = 42;
+const SPEED_MULT = 0.35;
+
+let mouseInside = false, mx = 0, my = 0;
+window.addEventListener('mousemove', e => {
+  const r = canvas.getBoundingClientRect();
+  if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) {
+    mx = e.clientX - r.left; my = e.clientY - r.top; mouseInside = true;
+  } else mouseInside = false;
+}, { passive: true });
+window.addEventListener('mouseleave', () => { mouseInside = false; });
+
+function pickY(size) {
+  const t = 0.5 + (Math.random() - 0.5) * 0.7;
+  let y = H * t;
+  const rad = size * 1.15;
+  return Math.max(rad + 8, Math.min(H - rad - 12, y));
+}
+function clampY(b) {
+  const rad = b.size * 1.15;
+  return Math.max(rad + 8, Math.min(H - rad - 12, b.y));
+}
+
+function buildBirds() {
+  birds = [];
+  for (let i = 0; i < COUNT; i++) {
+    const size = BASE_SIZE * (0.75 + Math.random() * 0.5);
+    const baseVx = (16 + Math.random() * 36) * (Math.random() < 0.5 ? -1 : 1);
+    const colorIdx = Math.min(
+      Math.floor(Math.random() * COLORS.length),
+      Math.floor(Math.random() * COLORS.length)
+    );
+    const grad = Math.random() < 0.4 ? GRADIENTS[Math.floor(Math.random() * GRADIENTS.length)] : null;
+    birds.push({
+      x: Math.random() * W * 1.4 - W * 0.2,
+      y: pickY(size),
+      vx: baseVx, vy: 0,
+      baseVx,
+      phase: Math.random() * Math.PI * 2,
+      flapRate: 2.6 + Math.random() * 2.4,
+      size, depth: 0.55 + Math.random() * 0.45,
+      color: COLORS[colorIdx], grad,
+    });
+  }
+}
+
+function update(dt) {
+  for (const b of birds) {
+    if (mouseInside) {
+      const dx = mx - b.x, dy = my - b.y;
+      const d = Math.hypot(dx, dy) + 1;
+      const falloff = Math.max(0, Math.min(1, (d - 25) / 80));
+      const pull = 420 * falloff;
+      const ux = dx / d, uy = dy / d;
+      b.vx += ux * pull * dt;
+      b.vy = (b.vy || 0) + uy * pull * dt;
+      const speed = Math.hypot(b.vx, b.vy);
+      const maxSpeed = 160;
+      if (speed > maxSpeed) {
+        b.vx *= maxSpeed / speed;
+        b.vy *= maxSpeed / speed;
+      }
+    } else {
+      const blend = 1 - Math.pow(0.35, dt);
+      b.vx += (b.baseVx - b.vx) * blend;
+      b.vy = (b.vy || 0) * Math.pow(0.4, dt * 4);
+      if (Math.abs(b.vy) < 0.4) b.vy = 0;
+    }
+    b.x += b.vx * SPEED_MULT * dt;
+    b.y += (b.vy || 0) * SPEED_MULT * dt;
+    b.phase += dt * b.flapRate;
+    const pad = b.size * 6;
+    if (b.vx > 0 && b.x > W + pad) { b.x = -pad; b.y = pickY(b.size); }
+    if (b.vx < 0 && b.x < -pad) { b.x = W + pad; b.y = pickY(b.size); }
+    b.y = clampY(b);
+  }
+
+  // Vertical separation
+  for (let i = 0; i < birds.length; i++) {
+    for (let j = i + 1; j < birds.length; j++) {
+      const a = birds[i], c = birds[j];
+      const minDist = (a.size + c.size) * 1.6 + 8;
+      const dx = c.x - a.x, dy = c.y - a.y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < minDist * minDist && d2 > 0.0001) {
+        const d = Math.sqrt(d2);
+        const overlap = minDist - d;
+        const sign = dy >= 0 ? 1 : -1;
+        a.y -= sign * overlap * 0.5;
+        c.y += sign * overlap * 0.5;
+        a.y = clampY(a); c.y = clampY(c);
+      }
+    }
+  }
+
+  // Always-visible failsafe
+  let anyVisible = false;
+  for (const b of birds) if (b.x >= 0 && b.x <= W) { anyVisible = true; break; }
+  if (!anyVisible && birds.length) {
+    let bestB = birds[0], bestD = Infinity;
+    for (const b of birds) {
+      const distEdge = b.vx > 0 ? Math.abs(-b.x) : Math.abs(b.x - W);
+      if (distEdge < bestD) { bestD = distEdge; bestB = b; }
+    }
+    bestB.x = Math.random() * W;
+    bestB.y = pickY(bestB.size);
+  }
+}
+
+function drawOne(b) {
+  const flap = Math.sin(b.phase) * 0.5 + 0.5;
+  const wing = 0.18 + flap * 0.5;
+  const s = b.size * (0.7 + b.depth * 0.4);
+  const bob = Math.sin(b.phase * 0.7) * 2.0;
+  const cx = b.x, cy = b.y + bob;
+  ctx.globalAlpha = 0.55 + b.depth * 0.35;
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  ctx.strokeStyle = b.color; ctx.fillStyle = b.color;
+
+  if (style === 'v') {
+    const drop = Math.sin(wing) * s * 0.35;
+    const up = -s * wing * 0.65;
+    ctx.lineWidth = Math.max(1.2, s * 0.14);
+    ctx.beginPath();
+    ctx.moveTo(cx - s, cy + drop);
+    ctx.lineTo(cx, cy + up);
+    ctx.lineTo(cx + s, cy + drop);
+    ctx.stroke();
+  } else if (style === 'm') {
+    ctx.lineWidth = Math.max(1.2, s * 0.12);
+    ctx.beginPath();
+    ctx.moveTo(cx - s, cy + Math.sin(wing) * s * 0.45);
+    ctx.quadraticCurveTo(cx - s * 0.5, cy - s * wing * 0.9, cx, cy);
+    ctx.quadraticCurveTo(cx + s * 0.5, cy - s * wing * 0.9, cx + s, cy + Math.sin(wing) * s * 0.45);
+    ctx.stroke();
+  } else if (style === 'dash') {
+    ctx.lineWidth = Math.max(1.3, s * 0.16);
+    ctx.beginPath();
+    ctx.moveTo(cx - s, cy + Math.sin(wing) * s * 0.25);
+    ctx.quadraticCurveTo(cx, cy - s * wing * 0.7, cx + s, cy + Math.sin(wing) * s * 0.25);
+    ctx.stroke();
+  } else if (style === 'circle') {
+    const bodyR = Math.max(1.2, s * 0.14);
+    const wingR = Math.max(1.0, s * 0.11);
+    const lift = -flap * s * 0.22;
+    const drawCircle = (px, py, pr) => {
+      if (b.grad) {
+        const g = ctx.createRadialGradient(px - pr * 0.4, py - pr * 0.45, pr * 0.05, px, py, pr * 1.05);
+        g.addColorStop(0, b.grad.hi); g.addColorStop(0.55, b.grad.mid); g.addColorStop(1, b.grad.lo);
+        ctx.fillStyle = g;
+      }
+      ctx.beginPath();
+      ctx.arc(px, py, pr, 0, Math.PI * 2);
+      ctx.fill();
+    };
+    drawCircle(cx, cy, bodyR);
+    drawCircle(cx - s * 0.55, cy + lift, wingR);
+    drawCircle(cx + s * 0.55, cy + lift, wingR);
+  }
+}
+
+let raf = 0, lastT = performance.now();
+function tick() {
+  const now = performance.now();
+  const dt = Math.min(0.05, (now - lastT) / 1000);
+  lastT = now;
+  update(dt);
+  ctx.clearRect(0, 0, W, H);
+  for (const b of birds) drawOne(b);
+  ctx.globalAlpha = 1;
+  raf = requestAnimationFrame(tick);
+}
+
+function resize() {
+  const r = canvas.getBoundingClientRect();
+  W = r.width; H = r.height;
+  canvas.width = Math.round(W * dpr);
+  canvas.height = Math.round(H * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  buildBirds();
+}
+resize();
+window.addEventListener('resize', () => { clearTimeout(resize._t); resize._t = setTimeout(resize, 100); });
+
+document.querySelectorAll('.controls button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    style = btn.dataset.style;
+    document.querySelectorAll('.controls button').forEach(b => b.classList.toggle('active', b === btn));
+  });
+});
+
+if (!raf) raf = requestAnimationFrame(tick);
+</script>
+</body>
+</html>

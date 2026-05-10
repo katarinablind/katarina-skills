@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>3D Halftone Surface Studio</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    height: 100vh;
+    overflow: hidden;
+    background: linear-gradient(180deg, #d8e3ee 0%, #c8d8ea 60%, #b6cce1 100%);
+    font-family: ui-sans-serif, system-ui, sans-serif;
+  }
+  canvas { display: block; width: 100vw; height: 100vh; }
+  .hud {
+    position: fixed; top: 14px; left: 14px;
+    padding: 10px 14px;
+    background: rgba(255,255,255,0.78);
+    border: 1px solid rgba(20,20,20,0.10);
+    border-radius: 10px;
+    font-size: 12px;
+    color: rgba(20,20,20,0.78);
+    backdrop-filter: blur(14px) saturate(180%);
+    -webkit-backdrop-filter: blur(14px) saturate(180%);
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hud">3D halftone surface — wave projected as image-grid sprites</div>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const dpr = Math.min(devicePixelRatio || 1, 2);
+let W = 0, H = 0;
+const t0 = performance.now();
+
+const CFG = {
+  cols: 30, rows: 11,
+  dot: 10.6, dotMin: 1.6, dotMax: 17.5,
+  amp: 0.50, wScale: 0.45, wSpd: 0.98,
+  tilt: 1.15, camDepth: 4.05, fade: 1.00,
+  worldW: 15.2, farTaper: 1.80,
+};
+const CAM_H = 1.0;
+const WORLD_D = 12;
+
+/* Procedural sprite palette — six tints ranging from foam to deep blue */
+const SPRITE_COUNT = 6;
+const SPRITE_TINTS = [
+  { hi: '#ffffff', mid: '#dbe7f1', lo: '#7997b5' },
+  { hi: '#f7fbff', mid: '#bcd2e6', lo: '#5d7da0' },
+  { hi: '#dbe7f1', mid: '#94afca', lo: '#3a577b' },
+  { hi: '#aac6dd', mid: '#5e85a7', lo: '#23405e' },
+  { hi: '#7397b6', mid: '#3d6087', lo: '#172d44' },
+  { hi: '#f0e7c0', mid: '#c4b78a', lo: '#5b522d' },
+];
+const sprites = SPRITE_TINTS.map(t => buildSphereSprite(t));
+
+function buildSphereSprite({ hi, mid, lo }) {
+  const c = document.createElement('canvas');
+  c.width = c.height = 96;
+  const cx = c.getContext('2d');
+  const r = 48;
+  const grad = cx.createRadialGradient(r - r * 0.35, r - r * 0.4, 0, r, r, r * 1.05);
+  grad.addColorStop(0, hi);
+  grad.addColorStop(0.55, mid);
+  grad.addColorStop(1, lo);
+  cx.fillStyle = grad;
+  cx.beginPath(); cx.arc(r, r, r, 0, Math.PI * 2); cx.fill();
+  return c;
+}
+
+let variation = null;
+let varKey = '';
+function buildVariation(cols, rows) {
+  const key = cols + 'x' + rows;
+  if (varKey === key) return;
+  variation = new Array(cols * rows);
+  for (let j = 0; j < rows; j++) {
+    for (let i = 0; i < cols; i++) {
+      let h = ((i * 73856093) ^ (j * 19349663) ^ 0x9e3779b9) >>> 0;
+      h = Math.imul(h ^ (h >>> 16), 0x85ebca6b) >>> 0;
+      h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35) >>> 0;
+      h = (h ^ (h >>> 16)) >>> 0;
+      const r2 = (h & 0xffff) / 0x10000;
+      let h2 = Math.imul(h ^ 0x27d4eb2d, 0x165667b1) >>> 0;
+      h2 = (h2 ^ (h2 >>> 15)) >>> 0;
+      const r3 = (h2 & 0xffff) / 0x10000;
+      const imgIdx = Math.floor(r2 * SPRITE_COUNT);
+      variation[j * cols + i] = { imgIdx, rotation: r3 * Math.PI * 2 };
+    }
+  }
+
+  // Front-row coverage
+  const FRONT = 0;
+  const presentRow = new Set();
+  for (let i = 0; i < cols; i++) presentRow.add(variation[FRONT * cols + i].imgIdx);
+  const missing = [];
+  for (let k = 0; k < SPRITE_COUNT; k++) if (!presentRow.has(k)) missing.push(k);
+  if (missing.length) {
+    const counts = new Array(SPRITE_COUNT).fill(0);
+    for (let i = 0; i < cols; i++) counts[variation[FRONT * cols + i].imgIdx]++;
+    let cursor = Math.floor(cols / (missing.length + 1));
+    const stride = Math.max(1, Math.floor(cols / missing.length));
+    for (const idx of missing) {
+      for (let step = 0; step < cols; step++) {
+        const i = (cursor + step) % cols;
+        const cell = variation[FRONT * cols + i];
+        if (counts[cell.imgIdx] > 1) {
+          counts[cell.imgIdx]--;
+          cell.imgIdx = idx;
+          counts[idx] = (counts[idx] || 0) + 1;
+          break;
+        }
+      }
+      cursor = (cursor + stride) % cols;
+    }
+  }
+  varKey = key;
+}
+
+function waveY(x, z, tt) {
+  const k = CFG.wScale, s = CFG.wSpd;
+  const a = Math.sin(x * k + tt * s);
+  const b = Math.sin(z * k * 1.4 - tt * s * 0.7 + 1.3);
+  const c = Math.sin((x + z) * k * 0.55 + tt * s * 1.6 + 2.1);
+  const d = Math.sin((x * 0.9 - z * 1.3) * k * 2.1 - tt * s * 1.9);
+  return (a * 0.38 + b * 0.28 + c * 0.20 + d * 0.14) * CFG.amp;
+}
+
+function project(x, y, z) {
+  const D = CFG.camDepth + z;
+  if (D <= 0.1) return null;
+  const f = Math.min(W, H) * 1.5;
+  const yHorizon = H * (0.30 - CFG.tilt * 0.20);
+  const sx = W * 0.5 + (x * f) / D;
+  const sy = yHorizon + ((CAM_H - y) * f) / D;
+  return { sx, sy, scale: f / D };
+}
+
+let raf = 0;
+function tick() {
+  const tt = (performance.now() - t0) * 0.001;
+  ctx.clearRect(0, 0, W, H);
+
+  const cols = CFG.cols, rows = CFG.rows;
+  const ampSafe = CFG.amp || 0.0001;
+  buildVariation(cols, rows);
+
+  for (let j = rows - 1; j >= 0; j--) {
+    const zt = j / (rows - 1);
+    const z = zt * WORLD_D;
+    const fadeA = 1 - Math.pow(zt, 1.8) * CFG.fade;
+    const rowWidth = CFG.worldW * (1 + CFG.farTaper * zt);
+
+    for (let i = 0; i < cols; i++) {
+      const xt = i / (cols - 1);
+      const x = (xt - 0.5) * rowWidth;
+      const y = waveY(x, z, tt);
+      const p = project(x, y, z);
+      if (!p) continue;
+      if (p.sx < -20 || p.sx > W + 20) continue;
+      if (p.sy < -10 || p.sy > H + 10) continue;
+
+      const rRaw = CFG.dot * p.scale * 0.010;
+      const rad = Math.max(CFG.dotMin, Math.min(CFG.dotMax, rRaw));
+
+      const crest = y / ampSafe;
+      let bright = crest * 0.5 + 0.5;
+      const sparkle = Math.sin(x * 1.7 + z * 2.3 + tt * 1.9) * 0.5 + 0.5;
+      if (crest > 0.55 && sparkle > 0.78) bright = Math.min(1, bright + 0.35);
+
+      const variant = variation[j * cols + i];
+      ctx.globalAlpha = Math.max(0, Math.min(1, fadeA * (0.55 + bright * 0.45)));
+
+      ctx.save();
+      ctx.translate(p.sx, p.sy);
+      ctx.rotate(variant.rotation);
+      ctx.drawImage(sprites[variant.imgIdx], -rad, -rad, rad * 2, rad * 2);
+      ctx.restore();
+    }
+  }
+  ctx.globalAlpha = 1;
+  raf = requestAnimationFrame(tick);
+}
+
+function resize() {
+  const r = canvas.getBoundingClientRect();
+  W = r.width; H = r.height;
+  canvas.width = Math.round(W * dpr);
+  canvas.height = Math.round(H * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+resize();
+window.addEventListener('resize', () => { clearTimeout(resize._t); resize._t = setTimeout(resize, 100); });
+if (!raf) raf = requestAnimationFrame(tick);
+</script>
+</body>
+</html>

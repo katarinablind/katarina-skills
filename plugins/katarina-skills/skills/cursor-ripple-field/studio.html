@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cursor Ripple Field Studio</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    height: 100vh;
+    overflow: hidden;
+    background: #0d1419;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    color: #cbd5e1;
+  }
+  canvas { display: block; width: 100vw; height: 100vh; cursor: crosshair; }
+  .hud {
+    position: fixed; top: 14px; left: 14px;
+    padding: 10px 14px;
+    background: rgba(20,30,40,0.78);
+    border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 10px;
+    font-size: 12px;
+    color: rgba(220,230,240,0.85);
+    backdrop-filter: blur(14px) saturate(180%);
+    -webkit-backdrop-filter: blur(14px) saturate(180%);
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hud">Move or click — ripples distort the dot grid</div>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const dpr = Math.min(devicePixelRatio || 1, 2);
+let W = 0, H = 0;
+const t0 = performance.now();
+
+const RIPPLE_LIFE = 1.8;
+const RIPPLE_AMP = 8;
+const RIPPLE_LAMBDA = 110;
+const RIPPLE_SPEED = 200;
+const RIPPLE_DECAY = 240;
+const RIPPLE_MIN_GAP_MS = 180;
+const RIPPLE_MIN_DIST = 60;
+const MAX_RIPPLES = 12;
+
+const ripples = [];
+let lastRippleAt = 0;
+let lastRippleX = -9999, lastRippleY = -9999;
+
+function addRipple(sx, sy, ampMul = 1) {
+  ripples.push({
+    sx, sy,
+    t: (performance.now() - t0) * 0.001,
+    life: RIPPLE_LIFE,
+    amp: RIPPLE_AMP * ampMul,
+  });
+  if (ripples.length > MAX_RIPPLES) ripples.shift();
+}
+
+window.addEventListener('mousemove', e => {
+  const r = canvas.getBoundingClientRect();
+  if (e.clientX < r.left || e.clientX > r.right ||
+      e.clientY < r.top  || e.clientY > r.bottom) return;
+  const now = performance.now();
+  if (now - lastRippleAt < RIPPLE_MIN_GAP_MS) return;
+  const lx = e.clientX - r.left;
+  const ly = e.clientY - r.top;
+  const moved = Math.hypot(lx - lastRippleX, ly - lastRippleY);
+  if (moved < RIPPLE_MIN_DIST) return;
+  lastRippleAt = now;
+  lastRippleX = lx; lastRippleY = ly;
+  addRipple(lx, ly, 1.0);
+});
+window.addEventListener('click', e => {
+  const r = canvas.getBoundingClientRect();
+  if (e.clientX < r.left || e.clientX > r.right ||
+      e.clientY < r.top  || e.clientY > r.bottom) return;
+  addRipple(e.clientX - r.left, e.clientY - r.top, 2.4);
+});
+
+function rippleOffset(sx, sy, tt) {
+  let dy = 0;
+  for (const rp of ripples) {
+    const age = tt - rp.t;
+    if (age < 0 || age > rp.life) continue;
+    const dx = sx - rp.sx;
+    const dyR = sy - rp.sy;
+    const d = Math.hypot(dx, dyR);
+    const ringR = age * RIPPLE_SPEED;
+    const ringDelta = d - ringR;
+    if (Math.abs(ringDelta) > 4 * RIPPLE_DECAY) continue;
+    const ring = Math.exp(-(ringDelta * ringDelta) / (RIPPLE_DECAY * RIPPLE_DECAY));
+    const phase = (d / RIPPLE_LAMBDA - age * RIPPLE_SPEED / (RIPPLE_LAMBDA * 2)) * Math.PI * 2;
+    const lifeFade = 1 - age / rp.life;
+    dy += -Math.cos(phase) * ring * lifeFade * rp.amp;
+  }
+  return dy;
+}
+
+let raf = 0;
+function tick() {
+  const tt = (performance.now() - t0) * 0.001;
+
+  // prune
+  for (let i = ripples.length - 1; i >= 0; i--) {
+    if (tt - ripples[i].t > ripples[i].life) ripples.splice(i, 1);
+  }
+
+  ctx.clearRect(0, 0, W, H);
+
+  // Render a regular grid of small dots, with each dot's vertical offset
+  // driven by the ripple field at its base position
+  const SP = 18;
+  const cols = Math.ceil(W / SP) + 1;
+  const rows = Math.ceil(H / SP) + 1;
+  ctx.fillStyle = 'rgba(180,210,235,0.55)';
+
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const baseX = c * SP;
+      const baseY = r * SP;
+      const offset = rippleOffset(baseX, baseY, tt);
+      const intensity = Math.min(1, Math.abs(offset) / 8);
+      const radius = 1.2 + intensity * 2.5;
+
+      // Tint brightens with offset magnitude
+      ctx.globalAlpha = 0.35 + intensity * 0.55;
+      ctx.beginPath();
+      ctx.arc(baseX, baseY + offset, radius, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  ctx.globalAlpha = 1;
+  raf = requestAnimationFrame(tick);
+}
+
+function resize() {
+  const r = canvas.getBoundingClientRect();
+  W = r.width; H = r.height;
+  canvas.width = Math.round(W * dpr);
+  canvas.height = Math.round(H * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+resize();
+window.addEventListener('resize', () => { clearTimeout(resize._t); resize._t = setTimeout(resize, 100); });
+if (!raf) raf = requestAnimationFrame(tick);
+</script>
+</body>
+</html>

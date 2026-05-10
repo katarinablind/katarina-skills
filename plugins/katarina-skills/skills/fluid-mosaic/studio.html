@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fluid Mosaic Studio</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    height: 100vh;
+    overflow: hidden;
+    background: linear-gradient(180deg, #e6edf5 0%, #eef2f7 42%, #f7f8fa 100%);
+    font-family: ui-sans-serif, system-ui, sans-serif;
+  }
+  canvas { display: block; width: 100vw; height: 100vh; touch-action: none; }
+  .hud {
+    position: fixed; top: 14px; left: 14px;
+    padding: 10px 14px;
+    background: rgba(255,255,255,0.78);
+    border: 1px solid rgba(20,20,20,0.10);
+    border-radius: 10px;
+    font-size: 12px;
+    color: rgba(20,20,20,0.78);
+    backdrop-filter: blur(14px) saturate(180%);
+    -webkit-backdrop-filter: blur(14px) saturate(180%);
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hud">Move the cursor — fluid mosaic</div>
+<script>
+/* ── Perlin noise (drives the blob shape) ───────────────────────────── */
+const noise = (() => {
+  const p = new Uint8Array(512), pm = new Uint8Array(256);
+  for (let i = 0; i < 256; i++) pm[i] = i;
+  for (let i = 255; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0; [pm[i], pm[j]] = [pm[j], pm[i]]; }
+  for (let i = 0; i < 512; i++) p[i] = pm[i & 255];
+  const fade = t => t * t * t * (t * (t * 6 - 15) + 10);
+  const lerp = (a, b, t) => a + t * (b - a);
+  const grad = (h, x, y) => ((h & 1) ? -x : x) + ((h & 2) ? -y : y);
+  return (x, y) => {
+    const X = Math.floor(x) & 255, Y = Math.floor(y) & 255;
+    const xf = x - Math.floor(x), yf = y - Math.floor(y);
+    const u = fade(xf), v = fade(yf);
+    return lerp(
+      lerp(grad(p[p[X] + Y], xf, yf), grad(p[p[X + 1] + Y], xf - 1, yf), u),
+      lerp(grad(p[p[X] + Y + 1], xf, yf - 1), grad(p[p[X + 1] + Y + 1], xf - 1, yf - 1), u),
+      v);
+  };
+})();
+
+const PRISM_PALETTE = [
+  '#cfe3ae', '#9bcf7a', '#5fa968', '#3d8050', '#1f4b2c', '#7fae7b',
+  '#bcd6de', '#3ca6b4', '#15426a',
+  '#f0c542', '#ee7e30', '#e76a8d',
+];
+
+function buildSphereSprite(stops) {
+  const c = document.createElement('canvas');
+  c.width = c.height = 256;
+  const cx = c.getContext('2d');
+  const r = 128;
+  const grad = cx.createRadialGradient(r - r * 0.35, r - r * 0.4, 0, r, r, r * 1.05);
+  for (const [pos, rgba] of stops) grad.addColorStop(pos, rgba);
+  cx.fillStyle = grad;
+  cx.beginPath(); cx.arc(r, r, r, 0, Math.PI * 2); cx.fill();
+  return c;
+}
+const SPHERE_SPRITE = buildSphereSprite([
+  [0,    'rgba(255,240,195,1)'],
+  [0.10, 'rgba(240,220,170,1)'],
+  [0.55, 'rgba(128,128,128,1)'],
+  [0.85, 'rgba(55,45,105,1)'],
+  [1,    'rgba(30,25,70,1)'],
+]);
+
+class MosaicField {
+  constructor(canvas, opts = {}) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext('2d');
+    this.dpr = Math.min(devicePixelRatio || 1, 2);
+    this.mx = -9999; this.my = -9999;
+    this.dots = [];
+    this.opts = Object.assign({
+      spacing: 40, sizeMin: 2, sizeMax: 16,
+      motionSpeed: 2.0, fluidity: 0.6,
+      cursorRadius: 285, hoverScale: 0.25, shapeSize: 0.85,
+    }, opts);
+    this.setup();
+
+    const setPointer = (cx, cy) => {
+      const r = canvas.getBoundingClientRect();
+      this.mx = (cx - r.left) * (this.W / r.width);
+      this.my = (cy - r.top)  * (this.H / r.height);
+    };
+    const clearPointer = () => { this.mx = -9999; this.my = -9999; };
+    canvas.addEventListener('pointermove', e => setPointer(e.clientX, e.clientY));
+    canvas.addEventListener('pointerleave', clearPointer);
+  }
+
+  setup() {
+    const rect = this.canvas.getBoundingClientRect();
+    this.W = rect.width; this.H = rect.height;
+    this.canvas.width = this.W * this.dpr;
+    this.canvas.height = this.H * this.dpr;
+    this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+
+    const sp = this.opts.spacing;
+    this.sizeMinCached = this.opts.sizeMin;
+    this.sizeRangeCached = Math.max(0.5, this.opts.sizeMax - this.opts.sizeMin);
+
+    this.centerX = this.W * 0.5;
+    this.centerY = this.H * 0.5;
+    this.baseRadius = Math.min(this.W, this.H) * 0.42;
+
+    const MAX = 2.0, margin = 2.6;
+    const gridR = this.baseRadius * MAX;
+    const c0 = Math.floor((this.centerX - gridR * margin) / sp);
+    const c1 = Math.ceil( (this.centerX + gridR * margin) / sp);
+    const r0 = Math.floor((this.centerY - gridR * margin) / sp);
+    const r1 = Math.ceil( (this.centerY + gridR * margin) / sp);
+
+    this.dots = [];
+    for (let r = r0; r < r1; r++) {
+      for (let c = c0; c < c1; c++) {
+        const bx = c * sp, by = r * sp;
+        this.dots.push({
+          x: bx, y: by, baseX: bx, baseY: by, col: c, row: r,
+          size: 0, tx: bx, ty: by, ts: 0, opacity: 0, to: 0,
+          rotation: Math.random() * Math.PI * 2,
+          color: PRISM_PALETTE[Math.floor(Math.random() * PRISM_PALETTE.length)],
+          isSphere: Math.random() < 0.5,
+        });
+      }
+    }
+  }
+
+  update(t) {
+    const tt = t * this.opts.motionSpeed;
+    const fluid = this.opts.fluidity;
+    const cxA = this.centerX + noise(tt * 0.08, 0) * 55;
+    const cyA = this.centerY + noise(0, tt * 0.08) * 42;
+    const breathe = 0.94 + noise(tt * 0.13, 7) * 0.1;
+    const rA = this.baseRadius * this.opts.shapeSize * breathe;
+
+    for (const d of this.dots) {
+      let nx = (d.baseX - cxA) / rA;
+      let ny = (d.baseY - cyA) / rA;
+      if (fluid > 0.001) {
+        const wfx = d.baseX * 0.0032, wfy = d.baseY * 0.0032;
+        const warpAmp = fluid * 0.9;
+        nx += noise(wfx + tt * 0.15, wfy + tt * 0.08) * warpAmp;
+        ny += noise(wfx - tt * 0.10 + 50, wfy + tt * 0.13 + 50) * warpAmp;
+      }
+      const circDist = nx * nx + ny * ny;
+      const angle = Math.atan2(ny, nx);
+      const boundAmp = 0.38 + fluid * 0.28;
+      const boundaryNoise = noise(angle * 2 + tt * 0.22, tt * 0.14) * boundAmp;
+      const threshold = 1.0 + boundaryNoise;
+
+      if (circDist < threshold) {
+        const edgeDist = 1 - circDist / threshold;
+        d.ts = this.sizeMinCached + edgeDist * this.sizeRangeCached;
+        d.to = 0.25 + edgeDist * 0.72;
+        const n1 = noise(d.col * 0.1 + tt * 0.18, d.row * 0.1 + tt * 0.12);
+        const n2 = noise(d.col * 0.06 - tt * 0.1, d.row * 0.06 + tt * 0.08);
+        const movement = (1 - edgeDist * 0.6) * 4;
+        d.tx = d.baseX + n1 * movement;
+        d.ty = d.baseY + n2 * movement;
+      } else {
+        d.ts = 0; d.to = 0;
+        d.tx = d.baseX; d.ty = d.baseY;
+      }
+
+      const dx = d.x - this.mx, dy = d.y - this.my;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      const cursorR = this.opts.cursorRadius;
+      if (dist < cursorR) {
+        const hover = 1 - dist / cursorR;
+        const falloff = hover * hover;
+        d.ts *= 1 + hover * this.opts.hoverScale;
+        d.to = Math.min(1, d.opacity + hover * 0.6);
+        if (dist > 0.5) {
+          const pushAmt = falloff * (cursorR * 0.23);
+          d.tx += (dx / dist) * pushAmt;
+          d.ty += (dy / dist) * pushAmt;
+        }
+      }
+    }
+
+    const spd = 0.1;
+    for (const d of this.dots) {
+      d.x += (d.tx - d.x) * spd;
+      d.y += (d.ty - d.y) * spd;
+      d.size += (d.ts - d.size) * spd;
+      d.opacity += (d.to - d.opacity) * spd;
+    }
+  }
+
+  draw() {
+    const ctx = this.ctx;
+    ctx.clearRect(0, 0, this.W, this.H);
+    for (const d of this.dots) {
+      if (d.size < 1 || d.opacity < 0.01) continue;
+      ctx.save();
+      ctx.globalAlpha = Math.min(1, d.opacity);
+      ctx.translate(d.x, d.y);
+      ctx.rotate(d.rotation);
+      ctx.beginPath();
+      ctx.arc(0, 0, d.size, 0, Math.PI * 2);
+      ctx.closePath();
+
+      if (d.isSphere) {
+        ctx.fillStyle = d.color;
+        ctx.fill();
+        ctx.globalCompositeOperation = 'soft-light';
+        ctx.drawImage(SPHERE_SPRITE, -d.size, -d.size, d.size * 2, d.size * 2);
+      } else {
+        ctx.fillStyle = d.color;
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  animate() {
+    if (!this.active) return;
+    requestAnimationFrame(() => this.animate());
+    this.update(performance.now() * 0.001);
+    this.draw();
+  }
+  start() { this.active = true; this.animate(); }
+  stop()  { this.active = false; }
+}
+
+const field = new MosaicField(document.getElementById('c'));
+field.start();
+
+let resizeT;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeT);
+  resizeT = setTimeout(() => { field.stop(); field.setup(); field.start(); }, 100);
+});
+</script>
+</body>
+</html>
